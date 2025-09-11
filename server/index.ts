@@ -1,10 +1,52 @@
 import express, { type Request, Response, NextFunction } from "express";
+import session from "express-session";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { type PublicUser } from "@shared/schema";
+
+// Extend the session interface to include user data
+declare module 'express-session' {
+  interface SessionData {
+    user?: PublicUser;
+  }
+}
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Session configuration
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'betsnap-dev-secret-key',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+  },
+}));
+
+// Auth middleware to add user to request
+app.use((req, res, next) => {
+  if (req.session?.user) {
+    (req as any).user = req.session.user;
+  }
+  next();
+});
+
+// Authentication middleware function for protecting routes
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (!req.session?.user) {
+    return res.status(401).json({ message: 'Authentication required' });
+  }
+  next();
+}
+
+// Helper to get current user from session
+export function getCurrentUser(req: Request): PublicUser | null {
+  return req.session?.user || null;
+}
 
 app.use((req, res, next) => {
   const start = Date.now();

@@ -1,4 +1,4 @@
-import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { QueryClient, QueryFunction, MutationCache, QueryCache } from "@tanstack/react-query";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -41,7 +41,32 @@ export const getQueryFn: <T>(options: {
     return await res.json();
   };
 
+// Global 401 error handler
+function handle401Error() {
+  // Only redirect to login if we're not already on an auth page
+  if (!window.location.pathname.includes('/login') && !window.location.pathname.includes('/register')) {
+    console.log('401 error detected, redirecting to login');
+    window.location.href = '/login';
+  }
+}
+
 export const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (error) => {
+      // Handle 401 errors globally
+      if (error.message.includes('401:')) {
+        handle401Error();
+      }
+    },
+  }),
+  mutationCache: new MutationCache({
+    onError: (error) => {
+      // Handle 401 errors globally for mutations too
+      if (error.message.includes('401:')) {
+        handle401Error();
+      }
+    },
+  }),
   defaultOptions: {
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),

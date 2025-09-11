@@ -1,7 +1,8 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertBetSchema, insertScreenshotSchema } from "@shared/schema";
+import { insertBetSchema, insertScreenshotSchema, registerSchema, loginSchema } from "@shared/schema";
+import { requireAuth, getCurrentUser } from "./index";
 import { extractBetDataFromImage, validateBetData } from "./services/gemini";
 import { googleSheetsService } from "./services/googleSheets";
 import multer from "multer";
@@ -50,12 +51,73 @@ const upload = multer({
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Get current user (demo user for now)
-  app.get("/api/user", async (req, res) => {
+  // Authentication routes
+  app.post("/api/auth/register", async (req, res) => {
     try {
-      const user = await storage.getUser("demo-user-1");
+      const validatedData = registerSchema.parse(req.body);
+      
+      // Check if user already exists
+      const existingUser = await storage.getUserByEmail(validatedData.email);
+      if (existingUser) {
+        return res.status(400).json({ message: "User with this email already exists" });
+      }
+      
+      const user = await storage.createUser(validatedData);
+      
+      // Set session
+      req.session.user = user;
+      
+      res.json({ user, message: "Registration successful" });
+    } catch (error) {
+      console.error("Registration error:", error);
+      res.status(400).json({ message: "Invalid registration data" });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const validatedData = loginSchema.parse(req.body);
+      
+      const user = await storage.validatePassword(validatedData.email, validatedData.password);
       if (!user) {
-        return res.status(404).json({ message: "User not found" });
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+      
+      // Set session
+      req.session.user = user;
+      
+      res.json({ user, message: "Login successful" });
+    } catch (error) {
+      console.error("Login error:", error);
+      res.status(400).json({ message: "Invalid login data" });
+    }
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    req.session.destroy((err) => {
+      if (err) {
+        console.error("Logout error:", err);
+        return res.status(500).json({ message: "Failed to logout" });
+      }
+      res.clearCookie('connect.sid');
+      res.json({ message: "Logout successful" });
+    });
+  });
+
+  app.get("/api/auth/me", async (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) {
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+    res.json(user);
+  });
+
+  // Get current user (requires authentication)
+  app.get("/api/user", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
       }
       res.json(user);
     } catch (error) {
@@ -63,41 +125,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get user stats
-  app.get("/api/user/stats", async (req, res) => {
+  // Get user stats (requires authentication)
+  app.get("/api/user/stats", requireAuth, async (req, res) => {
     try {
-      const userId = "demo-user-1"; // In real app, get from authentication
-      const stats = await storage.getUserStats(userId);
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      const stats = await storage.getUserStats(user.id);
       res.json(stats);
     } catch (error) {
       res.status(500).json({ message: "Failed to get user stats" });
     }
   });
 
-  // Get user bets
-  app.get("/api/bets", async (req, res) => {
+  // Get user bets (requires authentication)
+  app.get("/api/bets", requireAuth, async (req, res) => {
     try {
-      const userId = "demo-user-1"; // In real app, get from authentication
-      const bets = await storage.getBetsByUser(userId);
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      const bets = await storage.getBetsByUser(user.id);
       res.json(bets);
     } catch (error) {
       res.status(500).json({ message: "Failed to get bets" });
     }
   });
 
-  // Create a new bet
-  app.post("/api/bets", async (req, res) => {
+  // Create a new bet (requires authentication)
+  app.post("/api/bets", requireAuth, async (req, res) => {
     try {
-      const userId = "demo-user-1"; // In real app, get from authentication
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
       const validatedData = insertBetSchema.parse({
         ...req.body,
-        userId,
+        userId: user.id,
       });
       
       const bet = await storage.createBet(validatedData);
       
       // Add to Google Sheets if user has connected sheets
-      const user = await storage.getUser(userId);
       if (user?.googleSheetsId) {
         try {
           await googleSheetsService.addBetToSheet(user.googleSheetsId, bet);
@@ -113,11 +183,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Update bet status
-  app.patch("/api/bets/:id", async (req, res) => {
+  // Update bet status (requires authentication)
+  app.patch("/api/bets/:id", requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const updates = req.body;
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      // Verify bet belongs to user
+      const existingBet = await storage.getBet(id);
+      if (!existingBet || existingBet.userId !== user.id) {
+        return res.status(404).json({ message: "Bet not found" });
+      }
       
       const bet = await storage.updateBet(id, updates);
       if (!bet) {
@@ -158,7 +238,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const userId = "demo-user-1"; // In real app, get from authentication
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      const userId = user.id;
       
       console.log('Processing file:', {
         originalname: req.file.originalname,
@@ -288,19 +372,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Create Google Sheets integration
-  app.post("/api/sheets/create", async (req, res) => {
+  // Create Google Sheets integration (requires authentication)
+  app.post("/api/sheets/create", requireAuth, async (req, res) => {
     try {
-      const userId = "demo-user-1"; // In real app, get from authentication
-      const user = await storage.getUser(userId);
-      
+      const user = getCurrentUser(req);
       if (!user) {
-        return res.status(404).json({ message: "User not found" });
+        return res.status(401).json({ message: "Authentication required" });
       }
 
       const sheetId = await googleSheetsService.createBetTrackingSheet(user.email);
       
-      await storage.updateUser(userId, { googleSheetsId: sheetId });
+      await storage.updateUser(user.id, { googleSheetsId: sheetId });
       
       res.json({ 
         sheetId,

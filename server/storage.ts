@@ -1,12 +1,14 @@
-import { type User, type InsertUser, type Bet, type InsertBet, type Screenshot, type InsertScreenshot } from "@shared/schema";
+import { type User, type InsertUser, type RegisterData, type PublicUser, type Bet, type InsertBet, type Screenshot, type InsertScreenshot } from "@shared/schema";
 import { randomUUID } from "crypto";
+import bcrypt from "bcrypt";
 
 export interface IStorage {
   // User methods
-  getUser(id: string): Promise<User | undefined>;
-  getUserByEmail(email: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
-  updateUser(id: string, user: Partial<User>): Promise<User | undefined>;
+  getUser(id: string): Promise<PublicUser | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>; // Returns full user with password for auth
+  createUser(user: RegisterData): Promise<PublicUser>; // For registration
+  updateUser(id: string, user: Partial<User>): Promise<PublicUser | undefined>;
+  validatePassword(email: string, password: string): Promise<PublicUser | null>; // For login
 
   // Bet methods
   getBet(id: string): Promise<Bet | undefined>;
@@ -38,11 +40,17 @@ export class MemStorage implements IStorage {
     this.bets = new Map();
     this.screenshots = new Map();
     
-    // Create a demo user
+    // Create a demo user with hashed password for testing
+    this.initializeDemoUser();
+  }
+
+  private async initializeDemoUser() {
+    const hashedPassword = await bcrypt.hash("demo123", 10);
     const demoUser: User = {
       id: "demo-user-1",
       email: "demo@betsnap.com",
       name: "Demo User",
+      password: hashedPassword,
       subscriptionPlan: "premium",
       googleSheetsId: null,
       createdAt: new Date(),
@@ -51,32 +59,56 @@ export class MemStorage implements IStorage {
   }
 
   // User methods
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async getUser(id: string): Promise<PublicUser | undefined> {
+    const user = this.users.get(id);
+    if (!user) return undefined;
+    // Return user without password
+    const { password, ...publicUser } = user;
+    return publicUser;
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
     return Array.from(this.users.values()).find(user => user.email === email);
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
+  async createUser(registerData: RegisterData): Promise<PublicUser> {
     const id = randomUUID();
+    const hashedPassword = await bcrypt.hash(registerData.password, 10);
     const user: User = {
-      ...insertUser,
+      ...registerData,
       id,
+      password: hashedPassword,
+      subscriptionPlan: "free", // Default plan
+      googleSheetsId: null,
       createdAt: new Date(),
     };
     this.users.set(id, user);
-    return user;
+    // Return user without password
+    const { password, ...publicUser } = user;
+    return publicUser;
   }
 
-  async updateUser(id: string, updates: Partial<User>): Promise<User | undefined> {
+  async updateUser(id: string, updates: Partial<User>): Promise<PublicUser | undefined> {
     const user = this.users.get(id);
     if (!user) return undefined;
     
     const updatedUser = { ...user, ...updates };
     this.users.set(id, updatedUser);
-    return updatedUser;
+    // Return user without password
+    const { password, ...publicUser } = updatedUser;
+    return publicUser;
+  }
+
+  async validatePassword(email: string, password: string): Promise<PublicUser | null> {
+    const user = Array.from(this.users.values()).find(user => user.email === email);
+    if (!user) return null;
+    
+    const isValid = await bcrypt.compare(password, user.password);
+    if (!isValid) return null;
+    
+    // Return user without password
+    const { password: _, ...publicUser } = user;
+    return publicUser;
   }
 
   // Bet methods

@@ -7,6 +7,7 @@ export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
+  password: text("password").notNull(),
   subscriptionPlan: text("subscription_plan").notNull().default("free"), // free, premium
   googleSheetsId: text("google_sheets_id"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -44,6 +45,24 @@ export const screenshots = pgTable("screenshots", {
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
+  password: true, // Exclude password from regular insert schema
+});
+
+// Authentication specific schemas
+export const registerSchema = z.object({
+  name: z.string().min(1, "Name is required").max(100),
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+});
+
+export const loginSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(1, "Password is required"),
+});
+
+export const insertUserWithPasswordSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
 });
 
 export const insertBetSchema = createInsertSchema(bets).omit({
@@ -59,6 +78,10 @@ export const insertScreenshotSchema = createInsertSchema(screenshots).omit({
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+export type RegisterData = z.infer<typeof registerSchema>;
+export type LoginData = z.infer<typeof loginSchema>;
+export type InsertUserWithPassword = z.infer<typeof insertUserWithPasswordSchema>;
+export type PublicUser = Omit<User, 'password'>; // User without password for API responses
 export type Bet = typeof bets.$inferSelect;
 export type InsertBet = z.infer<typeof insertBetSchema>;
 export type Screenshot = typeof screenshots.$inferSelect;
