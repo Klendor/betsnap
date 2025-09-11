@@ -30,8 +30,19 @@ export const bets = pgTable("bets", {
   actualPayout: decimal("actual_payout", { precision: 10, scale: 2 }),
   screenshotUrl: text("screenshot_url"),
   extractedData: text("extracted_data"), // JSON string of raw AI extraction
+  notes: text("notes"), // User notes for the bet
+  sheetRowId: text("sheet_row_id"), // Google Sheets row ID for syncing
   createdAt: timestamp("created_at").defaultNow(),
   settledAt: timestamp("settled_at"),
+});
+
+export const betHistories = pgTable("bet_histories", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  betId: varchar("bet_id").notNull().references(() => bets.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  action: text("action").notNull(), // created, updated, settled, deleted, duplicated
+  changes: text("changes").notNull(), // JSON string of what changed
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const screenshots = pgTable("screenshots", {
@@ -75,6 +86,32 @@ export const insertBetSchema = createInsertSchema(bets).omit({
   settledAt: true,
 });
 
+export const updateBetSchema = insertBetSchema.partial().extend({
+  status: z.enum(["pending", "won", "lost"]).optional(),
+  actualPayout: z.string().optional(),
+  notes: z.string().optional(),
+}).refine((data) => {
+  // If status is being set to 'won', actualPayout must be provided and valid
+  if (data.status === 'won') {
+    if (!data.actualPayout) {
+      return false;
+    }
+    const payout = parseFloat(data.actualPayout);
+    if (isNaN(payout) || payout <= 0) {
+      return false;
+    }
+  }
+  return true;
+}, {
+  message: "actualPayout is required and must be a positive number when status is 'won'",
+  path: ["actualPayout"],
+});
+
+export const insertBetHistorySchema = createInsertSchema(betHistories).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertScreenshotSchema = createInsertSchema(screenshots).omit({
   id: true,
   createdAt: true,
@@ -88,5 +125,8 @@ export type InsertUserWithPassword = z.infer<typeof insertUserWithPasswordSchema
 export type PublicUser = Omit<User, 'password'>; // User without password for API responses
 export type Bet = typeof bets.$inferSelect;
 export type InsertBet = z.infer<typeof insertBetSchema>;
+export type UpdateBet = z.infer<typeof updateBetSchema>;
+export type BetHistory = typeof betHistories.$inferSelect;
+export type InsertBetHistory = z.infer<typeof insertBetHistorySchema>;
 export type Screenshot = typeof screenshots.$inferSelect;
 export type InsertScreenshot = z.infer<typeof insertScreenshotSchema>;

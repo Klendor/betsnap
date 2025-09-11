@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type RegisterData, type PublicUser, type Bet, type InsertBet, type Screenshot, type InsertScreenshot } from "@shared/schema";
+import { type User, type InsertUser, type RegisterData, type PublicUser, type Bet, type InsertBet, type UpdateBet, type BetHistory, type InsertBetHistory, type Screenshot, type InsertScreenshot } from "@shared/schema";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 
@@ -14,13 +14,21 @@ export interface IStorage {
   getBet(id: string): Promise<Bet | undefined>;
   getBetsByUser(userId: string): Promise<Bet[]>;
   createBet(bet: InsertBet): Promise<Bet>;
-  updateBet(id: string, bet: Partial<Bet>): Promise<Bet | undefined>;
+  updateBet(id: string, bet: UpdateBet, userId: string): Promise<Bet | undefined>;
+  deleteBet(id: string, userId: string): Promise<boolean>;
+  duplicateBet(id: string, userId: string): Promise<Bet | undefined>;
+  bulkUpdateBets(betIds: string[], action: string, userId: string, data?: any): Promise<{ success: number; failed: number }>;
+  updateBetNotes(id: string, notes: string, userId: string): Promise<Bet | undefined>;
   getUserStats(userId: string): Promise<{
     totalBets: number;
     winRate: number;
     totalProfit: number;
     pendingBets: number;
   }>;
+
+  // Bet History methods
+  getBetHistory(betId: string): Promise<BetHistory[]>;
+  createBetHistory(history: InsertBetHistory): Promise<BetHistory>;
 
   // Screenshot methods
   getScreenshot(id: string): Promise<Screenshot | undefined>;
@@ -33,11 +41,13 @@ export interface IStorage {
 export class MemStorage implements IStorage {
   private users: Map<string, User>;
   private bets: Map<string, Bet>;
+  private betHistories: Map<string, BetHistory>;
   private screenshots: Map<string, Screenshot>;
 
   constructor() {
     this.users = new Map();
     this.bets = new Map();
+    this.betHistories = new Map();
     this.screenshots = new Map();
     
     // Create a demo user with hashed password for testing
@@ -139,19 +149,152 @@ export class MemStorage implements IStorage {
       settledAt: null,
     };
     this.bets.set(id, bet);
+    
+    // Create history entry for creation
+    await this.createBetHistory({
+      betId: id,
+      userId: bet.userId,
+      action: "created",
+      changes: JSON.stringify({ bet }),
+    });
+    
     return bet;
   }
 
-  async updateBet(id: string, updates: Partial<Bet>): Promise<Bet | undefined> {
+  async updateBet(id: string, updates: UpdateBet, userId: string): Promise<Bet | undefined> {
     const bet = this.bets.get(id);
-    if (!bet) return undefined;
+    if (!bet || bet.userId !== userId) return undefined;
     
+    const originalBet = { ...bet };
     const updatedBet = { ...bet, ...updates };
+    
+    // Apply business logic
     if (updates.status && updates.status !== "pending" && !updatedBet.settledAt) {
       updatedBet.settledAt = new Date();
     }
+    
+    // Settlement rules
+    if (updates.status === "lost") {
+      updatedBet.actualPayout = "0";
+    }
+    if (updates.status === "won" && updates.actualPayout) {
+      const actualPayout = parseFloat(updates.actualPayout);
+      const stake = parseFloat(bet.stake);
+      if (actualPayout < stake) {
+        throw new Error("Won bets must have actualPayout >= stake");
+      }
+    }
+    
     this.bets.set(id, updatedBet);
+    
+    // Create history entry
+    const changes: any = {};
+    Object.keys(updates).forEach(key => {
+      if (originalBet[key] !== updates[key]) {
+        changes[key] = { from: originalBet[key], to: updates[key] };
+      }
+    });
+    
+    if (Object.keys(changes).length > 0) {
+      await this.createBetHistory({
+        betId: id,
+        userId,
+        action: "updated",
+        changes: JSON.stringify(changes),
+      });
+    }
+    
     return updatedBet;
+  }
+
+  async deleteBet(id: string, userId: string): Promise<boolean> {
+    const bet = this.bets.get(id);
+    if (!bet || bet.userId !== userId) return false;
+    
+    // Create history entry before deleting
+    await this.createBetHistory({
+      betId: id,
+      userId,
+      action: "deleted",
+      changes: JSON.stringify({ deletedBet: bet }),
+    });
+    
+    this.bets.delete(id);
+    return true;
+  }
+
+  async duplicateBet(id: string, userId: string): Promise<Bet | undefined> {
+    const originalBet = this.bets.get(id);
+    if (!originalBet || originalBet.userId !== userId) return undefined;
+    
+    const duplicatedBet: Bet = {
+      ...originalBet,
+      id: randomUUID(),
+      status: "pending",
+      actualPayout: null,
+      settledAt: null,
+      createdAt: new Date(),
+      notes: originalBet.notes ? `${originalBet.notes} (duplicated)` : "Duplicated bet",
+      sheetRowId: null, // Reset sheet sync
+    };
+    
+    this.bets.set(duplicatedBet.id, duplicatedBet);
+    
+    // Create history entry
+    await this.createBetHistory({
+      betId: duplicatedBet.id,
+      userId,
+      action: "duplicated",
+      changes: JSON.stringify({ originalBetId: id }),
+    });
+    
+    return duplicatedBet;
+  }
+
+  async bulkUpdateBets(betIds: string[], action: string, userId: string, data?: any): Promise<{ success: number; failed: number }> {
+    let success = 0;
+    let failed = 0;
+    
+    for (const betId of betIds) {
+      try {
+        const bet = this.bets.get(betId);
+        if (!bet || bet.userId !== userId) {
+          failed++;
+          continue;
+        }
+        
+        switch (action) {
+          case "markStatus":
+            if (data?.status) {
+              await this.updateBet(betId, { status: data.status, actualPayout: data.actualPayout }, userId);
+              success++;
+            } else {
+              failed++;
+            }
+            break;
+          case "delete":
+            const deleted = await this.deleteBet(betId, userId);
+            if (deleted) success++;
+            else failed++;
+            break;
+          case "duplicate":
+            const duplicated = await this.duplicateBet(betId, userId);
+            if (duplicated) success++;
+            else failed++;
+            break;
+          default:
+            failed++;
+        }
+      } catch (error) {
+        failed++;
+      }
+    }
+    
+    return { success, failed };
+  }
+
+  async updateBetNotes(id: string, notes: string, userId: string): Promise<Bet | undefined> {
+    return this.updateBet(id, { notes }, userId);
   }
 
   async getUserStats(userId: string): Promise<{
@@ -218,6 +361,24 @@ export class MemStorage implements IStorage {
 
   async getUnprocessedScreenshots(): Promise<Screenshot[]> {
     return Array.from(this.screenshots.values()).filter(screenshot => screenshot.processed === 0);
+  }
+
+  // Bet History methods
+  async getBetHistory(betId: string): Promise<BetHistory[]> {
+    return Array.from(this.betHistories.values())
+      .filter(history => history.betId === betId)
+      .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+  }
+
+  async createBetHistory(insertHistory: InsertBetHistory): Promise<BetHistory> {
+    const id = randomUUID();
+    const history: BetHistory = {
+      ...insertHistory,
+      id,
+      createdAt: new Date(),
+    };
+    this.betHistories.set(id, history);
+    return history;
   }
 }
 

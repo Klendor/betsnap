@@ -10,7 +10,8 @@ export interface GoogleSheetsService {
   getOAuthUrl(): string;
   handleOAuthCallback(code: string): Promise<{ accessToken: string; refreshToken: string; expiresAt: Date }>;
   createBetTrackingSheet(user: User): Promise<{ sheetId: string; newTokens?: { accessToken: string; expiresAt: Date } }>;
-  addBetToSheet(user: User, betData: any): Promise<{ newTokens?: { accessToken: string; expiresAt: Date } }>;
+  addBetToSheet(user: User, betData: any): Promise<{ sheetRowId: string; newTokens?: { accessToken: string; expiresAt: Date } }>;
+  updateBetInSheet(user: User, betData: any): Promise<{ newTokens?: { accessToken: string; expiresAt: Date } }>;
   syncExistingBets(user: User, bets: any[]): Promise<{ newTokens?: { accessToken: string; expiresAt: Date } }>;
   refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; expiresAt: Date }>;
   getBetTrackingTemplate(): any[];
@@ -356,7 +357,7 @@ class GoogleSheetsServiceImpl implements GoogleSheetsService {
     });
   }
 
-  async addBetToSheet(user: User, betData: any): Promise<{ newTokens?: { accessToken: string; expiresAt: Date } }> {
+  async addBetToSheet(user: User, betData: any): Promise<{ sheetRowId: string; newTokens?: { accessToken: string; expiresAt: Date } }> {
     try {
       const authResult = await this.getAuthenticatedClient(user);
       const sheets = google.sheets({ version: 'v4', auth: this.oauth2Client });
@@ -391,10 +392,62 @@ class GoogleSheetsServiceImpl implements GoogleSheetsService {
         },
       });
       
-      return { newTokens: authResult.newTokens || undefined };
+      // Return the row ID for future updates
+      const sheetRowId = `${nextRow}`;
+      
+      return { 
+        sheetRowId,
+        newTokens: authResult.newTokens || undefined 
+      };
     } catch (error) {
       console.error('Error adding bet to sheet:', error);
       throw new Error(`Failed to add bet to sheet: ${error}`);
+    }
+  }
+
+  async updateBetInSheet(user: User, betData: any): Promise<{ newTokens?: { accessToken: string; expiresAt: Date } }> {
+    try {
+      const authResult = await this.getAuthenticatedClient(user);
+      const sheets = google.sheets({ version: 'v4', auth: this.oauth2Client });
+      
+      if (!betData.sheetRowId) {
+        throw new Error('Bet not synced to sheet - sheetRowId missing');
+      }
+      
+      const rowNumber = parseInt(betData.sheetRowId);
+      
+      const values = [
+        new Date(betData.createdAt).toLocaleDateString(),
+        betData.sport,
+        betData.event,
+        betData.betType,
+        betData.odds,
+        parseFloat(betData.stake),
+        parseFloat(betData.potentialPayout),
+        betData.status,
+        betData.actualPayout ? parseFloat(betData.actualPayout) : '',
+        betData.actualPayout ? `=I${rowNumber}-F${rowNumber}` : '',
+        `=IF(B4=0,0,ROUND(COUNTIF(H2:H${rowNumber},"won")/COUNTA(A2:A${rowNumber})*100,2))`,
+        `=SUM(J2:J${rowNumber})`,
+        `=IF(L${rowNumber}=0,0,ROUND(L${rowNumber}/SUM(F2:F${rowNumber})*100,2))`,
+        betData.notes || '',
+        betData.screenshotUrl || '',
+        JSON.parse(betData.extractedData || '{}').confidence || '',
+      ];
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: user.googleSheetsId!,
+        range: `Bets!A${rowNumber}:P${rowNumber}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [values],
+        },
+      });
+      
+      return { newTokens: authResult.newTokens || undefined };
+    } catch (error) {
+      console.error('Error updating bet in sheet:', error);
+      throw new Error(`Failed to update bet in sheet: ${error}`);
     }
   }
 

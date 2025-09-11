@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertBetSchema, insertScreenshotSchema, registerSchema, loginSchema } from "@shared/schema";
+import { insertBetSchema, updateBetSchema, insertScreenshotSchema, registerSchema, loginSchema } from "@shared/schema";
 import { requireAuth, getCurrentUser } from "./index";
 import { extractBetDataFromImage, validateBetData } from "./services/gemini";
 import { googleSheetsService } from "./services/googleSheets";
@@ -171,13 +171,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user?.googleSheetsId && user?.googleSheetsConnected) {
         try {
           const sheetResult = await googleSheetsService.addBetToSheet(user, bet);
-          // Update tokens if they were refreshed
+          // Update bet with sheetRowId and tokens if they were refreshed
+          const updates: any = { sheetRowId: sheetResult.sheetRowId };
           if (sheetResult.newTokens) {
             await storage.updateUser(user.id, {
               googleAccessToken: sheetResult.newTokens.accessToken,
               googleTokenExpiry: sheetResult.newTokens.expiresAt,
             });
           }
+          await storage.updateBet(bet.id, updates, user.id);
+          bet.sheetRowId = sheetResult.sheetRowId;
         } catch (error) {
           console.error("Failed to add bet to Google Sheets:", error);
           // Continue even if sheets update fails
@@ -190,30 +193,221 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Update bet status (requires authentication)
+  // Update bet (requires authentication) - Enhanced with validation and history
   app.patch("/api/bets/:id", requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      // Validate request data
+      const validatedUpdates = updateBetSchema.parse(req.body);
+      
+      const bet = await storage.updateBet(id, validatedUpdates, user.id);
+      if (!bet) {
+        return res.status(404).json({ message: "Bet not found" });
+      }
+      
+      // Update Google Sheets if user has connected sheets and bet has sheetRowId
+      if (user?.googleSheetsId && user?.googleSheetsConnected && bet.sheetRowId) {
+        try {
+          const sheetResult = await googleSheetsService.updateBetInSheet(user, bet);
+          // Update tokens if they were refreshed
+          if (sheetResult.newTokens) {
+            await storage.updateUser(user.id, {
+              googleAccessToken: sheetResult.newTokens.accessToken,
+              googleTokenExpiry: sheetResult.newTokens.expiresAt,
+            });
+          }
+        } catch (error) {
+          console.error("Failed to update bet in Google Sheets:", error);
+          // Continue even if sheets update fails
+        }
+      }
+      
+      res.json(bet);
+    } catch (error) {
+      console.error("Update bet error:", error);
+      if (error.message.includes("actualPayout")) {
+        return res.status(400).json({ message: error.message });
+      }
+      res.status(400).json({ message: "Failed to update bet" });
+    }
+  });
+
+  // Delete bet (requires authentication)
+  app.delete("/api/bets/:id", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      // Get bet before deletion for Google Sheets sync
+      const bet = await storage.getBet(id);
+      if (!bet || bet.userId !== user.id) {
+        return res.status(404).json({ message: "Bet not found" });
+      }
+      
+      const deleted = await storage.deleteBet(id, user.id);
+      if (!deleted) {
+        return res.status(404).json({ message: "Bet not found" });
+      }
+      
+      // Remove from Google Sheets if user has connected sheets and bet had sheetRowId
+      if (user?.googleSheetsId && user?.googleSheetsConnected && bet.sheetRowId) {
+        try {
+          if (googleSheetsService.deleteBetFromSheet) {
+            const sheetResult = await googleSheetsService.deleteBetFromSheet(user, bet.sheetRowId);
+            // Update tokens if they were refreshed
+            if (sheetResult.newTokens) {
+              await storage.updateUser(user.id, {
+                googleAccessToken: sheetResult.newTokens.accessToken,
+                googleTokenExpiry: sheetResult.newTokens.expiresAt,
+              });
+            }
+          }
+        } catch (error) {
+          console.error("Failed to delete bet from Google Sheets:", error);
+          // Continue even if sheets deletion fails
+        }
+      }
+      
+      res.json({ message: "Bet deleted successfully" });
+    } catch (error) {
+      console.error("Delete bet error:", error);
+      res.status(400).json({ message: "Failed to delete bet" });
+    }
+  });
+
+  // Duplicate bet (requires authentication)
+  app.post("/api/bets/:id/duplicate", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const duplicatedBet = await storage.duplicateBet(id, user.id);
+      if (!duplicatedBet) {
+        return res.status(404).json({ message: "Bet not found" });
+      }
+      
+      // Add to Google Sheets if user has connected sheets
+      if (user?.googleSheetsId && user?.googleSheetsConnected) {
+        try {
+          const sheetResult = await googleSheetsService.addBetToSheet(user, duplicatedBet);
+          // Update bet with sheetRowId and tokens if they were refreshed
+          const updates: any = { sheetRowId: sheetResult.sheetRowId };
+          if (sheetResult.newTokens) {
+            await storage.updateUser(user.id, {
+              googleAccessToken: sheetResult.newTokens.accessToken,
+              googleTokenExpiry: sheetResult.newTokens.expiresAt,
+            });
+          }
+          await storage.updateBet(duplicatedBet.id, updates, user.id);
+          duplicatedBet.sheetRowId = sheetResult.sheetRowId;
+        } catch (error) {
+          console.error("Failed to add duplicated bet to Google Sheets:", error);
+          // Continue even if sheets update fails
+        }
+      }
+      
+      res.json(duplicatedBet);
+    } catch (error) {
+      console.error("Duplicate bet error:", error);
+      res.status(400).json({ message: "Failed to duplicate bet" });
+    }
+  });
+
+  // Bulk bet operations (requires authentication)
+  app.post("/api/bets/bulk", requireAuth, async (req, res) => {
+    try {
+      const { betIds, action, data } = req.body;
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      if (!Array.isArray(betIds) || betIds.length === 0) {
+        return res.status(400).json({ message: "betIds array is required" });
+      }
+      
+      if (!action) {
+        return res.status(400).json({ message: "action is required" });
+      }
+      
+      const result = await storage.bulkUpdateBets(betIds, action, user.id, data);
+      res.json(result);
+    } catch (error) {
+      console.error("Bulk update error:", error);
+      res.status(400).json({ message: "Failed to perform bulk operation" });
+    }
+  });
+
+  // Update bet notes (requires authentication)
+  app.patch("/api/bets/:id/notes", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { notes } = req.body;
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const bet = await storage.updateBetNotes(id, notes || "", user.id);
+      if (!bet) {
+        return res.status(404).json({ message: "Bet not found" });
+      }
+      
+      // Update Google Sheets if user has connected sheets and bet has sheetRowId
+      if (user?.googleSheetsId && user?.googleSheetsConnected && bet.sheetRowId) {
+        try {
+          const sheetResult = await googleSheetsService.updateBetInSheet(user, bet);
+          // Update tokens if they were refreshed
+          if (sheetResult.newTokens) {
+            await storage.updateUser(user.id, {
+              googleAccessToken: sheetResult.newTokens.accessToken,
+              googleTokenExpiry: sheetResult.newTokens.expiresAt,
+            });
+          }
+        } catch (error) {
+          console.error("Failed to update bet notes in Google Sheets:", error);
+          // Continue even if sheets update fails
+        }
+      }
+      
+      res.json(bet);
+    } catch (error) {
+      console.error("Update bet notes error:", error);
+      res.status(400).json({ message: "Failed to update bet notes" });
+    }
+  });
+
+  // Get bet history (requires authentication)
+  app.get("/api/bets/:id/history", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
       const user = getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ message: "Authentication required" });
       }
       
       // Verify bet belongs to user
-      const existingBet = await storage.getBet(id);
-      if (!existingBet || existingBet.userId !== user.id) {
+      const bet = await storage.getBet(id);
+      if (!bet || bet.userId !== user.id) {
         return res.status(404).json({ message: "Bet not found" });
       }
       
-      const bet = await storage.updateBet(id, updates);
-      if (!bet) {
-        return res.status(404).json({ message: "Bet not found" });
-      }
-      
-      res.json(bet);
+      const history = await storage.getBetHistory(id);
+      res.json(history);
     } catch (error) {
-      res.status(400).json({ message: "Failed to update bet" });
+      console.error("Get bet history error:", error);
+      res.status(400).json({ message: "Failed to get bet history" });
     }
   });
 
