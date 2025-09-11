@@ -10,6 +10,10 @@ export const users = pgTable("users", {
   password: text("password").notNull(),
   subscriptionPlan: text("subscription_plan").notNull().default("free"), // free, premium
   googleSheetsId: text("google_sheets_id"),
+  googleAccessToken: text("google_access_token"),
+  googleRefreshToken: text("google_refresh_token"),
+  googleTokenExpiry: timestamp("google_token_expiry"),
+  googleSheetsConnected: integer("google_sheets_connected").default(0), // 0 = not connected, 1 = connected
   createdAt: timestamp("created_at").defaultNow(),
 });
 

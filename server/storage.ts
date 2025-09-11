@@ -53,6 +53,10 @@ export class MemStorage implements IStorage {
       password: hashedPassword,
       subscriptionPlan: "premium",
       googleSheetsId: null,
+      googleAccessToken: null,
+      googleRefreshToken: null,
+      googleTokenExpiry: null,
+      googleSheetsConnected: 0,
       createdAt: new Date(),
     };
     this.users.set(demoUser.id, demoUser);
@@ -80,6 +84,10 @@ export class MemStorage implements IStorage {
       password: hashedPassword,
       subscriptionPlan: "free", // Default plan
       googleSheetsId: null,
+      googleAccessToken: null,
+      googleRefreshToken: null,
+      googleTokenExpiry: null,
+      googleSheetsConnected: 0,
       createdAt: new Date(),
     };
     this.users.set(id, user);

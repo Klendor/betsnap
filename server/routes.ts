@@ -168,9 +168,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const bet = await storage.createBet(validatedData);
       
       // Add to Google Sheets if user has connected sheets
-      if (user?.googleSheetsId) {
+      if (user?.googleSheetsId && user?.googleSheetsConnected) {
         try {
-          await googleSheetsService.addBetToSheet(user.googleSheetsId, bet);
+          const sheetResult = await googleSheetsService.addBetToSheet(user, bet);
+          // Update tokens if they were refreshed
+          if (sheetResult.newTokens) {
+            await storage.updateUser(user.id, {
+              googleAccessToken: sheetResult.newTokens.accessToken,
+              googleTokenExpiry: sheetResult.newTokens.expiresAt,
+            });
+          }
         } catch (error) {
           console.error("Failed to add bet to Google Sheets:", error);
           // Continue even if sheets update fails
@@ -372,26 +379,310 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Create Google Sheets integration (requires authentication)
-  app.post("/api/sheets/create", requireAuth, async (req, res) => {
+  // Google OAuth flow initiation
+  app.get("/api/auth/google", requireAuth, async (req, res) => {
     try {
       const user = getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ message: "Authentication required" });
       }
 
-      const sheetId = await googleSheetsService.createBetTrackingSheet(user.email);
+      const authUrl = googleSheetsService.getOAuthUrl();
+      res.json({ authUrl });
+    } catch (error) {
+      console.error("OAuth initiation error:", error);
+      res.status(500).json({ 
+        message: "Failed to initiate Google authorization. Please check Google OAuth configuration.",
+        details: error.message 
+      });
+    }
+  });
+
+  // Google OAuth callback
+  app.get("/api/auth/google/callback", async (req, res) => {
+    try {
+      const { code, error: oauthError, error_description } = req.query;
       
-      await storage.updateUser(user.id, { googleSheetsId: sheetId });
+      // Handle OAuth errors from Google
+      if (oauthError) {
+        console.error("Google OAuth error:", oauthError, error_description);
+        return res.status(400).send(`
+          <html>
+            <head>
+              <title>Authorization Failed - BetSnap</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+            </head>
+            <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; color: white;">
+              <div style="background: white; color: #333; border-radius: 10px; padding: 40px; max-width: 400px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+                <h2 style="color: #dc3545; margin-bottom: 20px;">Authorization Cancelled</h2>
+                <p style="margin-bottom: 30px;">Google authorization was cancelled or failed.</p>
+                <p style="font-size: 14px; color: #666; margin-bottom: 30px;">${error_description || 'Please try again to connect your Google account.'}</p>
+                <button onclick="notifyParentAndClose('GOOGLE_AUTH_CANCELLED')" style="padding: 12px 24px; background: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">Close Window</button>
+              </div>
+              <script>
+                function notifyParentAndClose(type) {
+                  if (window.opener) {
+                    const origin = '${process.env.REPL_URL || 'http://localhost:5000'}';
+                    window.opener.postMessage({ type }, origin);
+                  }
+                  window.close();
+                }
+              </script>
+            </body>
+          </html>
+        `);
+      }
+      
+      if (!code) {
+        return res.status(400).send(`
+          <html>
+            <head>
+              <title>Authorization Failed - BetSnap</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+            </head>
+            <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; color: white;">
+              <div style="background: white; color: #333; border-radius: 10px; padding: 40px; max-width: 400px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+                <h2 style="color: #dc3545; margin-bottom: 20px;">Authorization Failed</h2>
+                <p style="margin-bottom: 30px;">No authorization code received from Google.</p>
+                <button onclick="notifyParentAndClose('GOOGLE_AUTH_FAILED')" style="padding: 12px 24px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">Close Window</button>
+              </div>
+              <script>
+                function notifyParentAndClose(type) {
+                  if (window.opener) {
+                    const origin = '${process.env.REPL_URL || 'http://localhost:5000'}';
+                    window.opener.postMessage({ type }, origin);
+                  }
+                  window.close();
+                }
+              </script>
+            </body>
+          </html>
+        `);
+      }
+
+      console.log("Processing Google OAuth callback with code:", code.substring(0, 20) + "...");
+
+      // Exchange code for tokens
+      const tokens = await googleSheetsService.handleOAuthCallback(code as string);
+      
+      console.log("Successfully obtained tokens, expires at:", tokens.expiresAt);
+      
+      res.send(`
+        <html>
+          <head>
+            <title>Authorization Successful - BetSnap</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+          </head>
+          <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; color: white;">
+            <div style="background: white; color: #333; border-radius: 10px; padding: 40px; max-width: 400px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+              <div style="background: #28a745; color: white; width: 60px; height: 60px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 24px;">✓</div>
+              <h2 style="color: #28a745; margin-bottom: 20px;">Authorization Successful!</h2>
+              <p style="margin-bottom: 20px;">Your Google account has been connected successfully.</p>
+              <p style="font-size: 14px; color: #666; margin-bottom: 30px;">Setting up your betting tracker now...</p>
+              <div style="margin-bottom: 30px;">
+                <div style="background: #f8f9fa; border-radius: 5px; padding: 10px; margin-bottom: 10px;">
+                  <span style="font-size: 12px; color: #6c757d;">Status: </span>
+                  <span id="status" style="font-size: 12px; color: #28a745;">Connecting...</span>
+                </div>
+              </div>
+              <button onclick="window.close()" style="padding: 12px 24px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;" disabled>Close Window</button>
+            </div>
+            <script>
+              let statusStep = 0;
+              const statusMessages = ['Connecting...', 'Authenticating...', 'Creating spreadsheet...', 'Complete!'];
+              
+              function updateStatus() {
+                if (statusStep < statusMessages.length - 1) {
+                  statusStep++;
+                  document.getElementById('status').textContent = statusMessages[statusStep];
+                  setTimeout(updateStatus, 800);
+                } else {
+                  document.querySelector('button').disabled = false;
+                  document.querySelector('button').style.background = '#28a745';
+                  document.querySelector('button').style.cursor = 'pointer';
+                }
+              }
+              
+              // Start status animation
+              setTimeout(updateStatus, 500);
+              
+              // Post message to parent window with secure origin
+              if (window.opener) {
+                try {
+                  const origin = '${process.env.REPL_URL || 'http://localhost:5000'}';
+                  console.log('Posting message to origin:', origin);
+                  window.opener.postMessage({ 
+                    type: 'GOOGLE_AUTH_SUCCESS', 
+                    tokens: ${JSON.stringify(tokens)} 
+                  }, origin);
+                } catch (e) {
+                  console.error('Failed to post message:', e);
+                }
+              }
+              
+              // Auto-close after 5 seconds
+              setTimeout(() => {
+                window.close();
+              }, 5000);
+            </script>
+          </body>
+        </html>
+      `);
+    } catch (error) {
+      console.error("OAuth callback error:", error);
+      res.status(500).send(`
+        <html>
+          <head>
+            <title>Authorization Failed - BetSnap</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+          </head>
+          <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; color: white;">
+            <div style="background: white; color: #333; border-radius: 10px; padding: 40px; max-width: 400px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+              <h2 style="color: #dc3545; margin-bottom: 20px;">Authorization Failed</h2>
+              <p style="margin-bottom: 20px;">Failed to complete Google authorization.</p>
+              <p style="font-size: 14px; color: #666; margin-bottom: 30px;">${error.message}</p>
+              <button onclick="notifyParentAndClose('GOOGLE_AUTH_ERROR')" style="padding: 12px 24px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">Close Window</button>
+            </div>
+            <script>
+              function notifyParentAndClose(type) {
+                if (window.opener) {
+                  const origin = '${process.env.REPL_URL || 'http://localhost:5000'}';
+                  window.opener.postMessage({ type, error: '${error.message}' }, origin);
+                }
+                window.close();
+              }
+            </script>
+          </body>
+        </html>
+      `);
+    }
+  });
+
+  // Complete Google Sheets setup after OAuth
+  app.post("/api/sheets/complete-setup", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      const { accessToken, refreshToken, expiresAt } = req.body;
+      
+      if (!accessToken || !refreshToken) {
+        return res.status(400).json({ message: "Missing OAuth tokens" });
+      }
+
+      // Update user with Google tokens
+      const updatedUser = await storage.updateUser(user.id, {
+        googleAccessToken: accessToken,
+        googleRefreshToken: refreshToken,
+        googleTokenExpiry: new Date(expiresAt),
+        googleSheetsConnected: 1,
+      });
+
+      if (!updatedUser) {
+        return res.status(500).json({ message: "Failed to save OAuth tokens" });
+      }
+
+      // Create the betting sheet
+      const sheetResult = await googleSheetsService.createBetTrackingSheet(updatedUser);
+      
+      // Update user with sheet ID and any refreshed tokens
+      const updateData: any = { googleSheetsId: sheetResult.sheetId };
+      if (sheetResult.newTokens) {
+        updateData.googleAccessToken = sheetResult.newTokens.accessToken;
+        updateData.googleTokenExpiry = sheetResult.newTokens.expiresAt;
+      }
+      await storage.updateUser(user.id, updateData);
+      
+      // Sync existing bets to the new sheet
+      const existingBets = await storage.getBetsByUser(user.id);
+      if (existingBets.length > 0) {
+        const syncResult = await googleSheetsService.syncExistingBets(updatedUser, existingBets);
+        // Update tokens if they were refreshed during sync
+        if (syncResult.newTokens) {
+          await storage.updateUser(user.id, {
+            googleAccessToken: syncResult.newTokens.accessToken,
+            googleTokenExpiry: syncResult.newTokens.expiresAt,
+          });
+        }
+      }
       
       res.json({ 
-        sheetId,
-        message: "Google Sheet created successfully",
-        url: `https://docs.google.com/spreadsheets/d/${sheetId}`,
+        sheetId: sheetResult.sheetId,
+        message: "Google Sheets integration completed successfully",
+        url: `https://docs.google.com/spreadsheets/d/${sheetResult.sheetId}`,
+        syncedBets: existingBets.length,
       });
     } catch (error) {
-      console.error("Sheets creation error:", error);
-      res.status(500).json({ message: "Failed to create Google Sheet" });
+      console.error("Sheets setup completion error:", error);
+      res.status(500).json({ 
+        message: "Failed to complete Google Sheets setup",
+        details: error.message 
+      });
+    }
+  });
+
+  // Disconnect Google Sheets
+  app.post("/api/sheets/disconnect", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      await storage.updateUser(user.id, {
+        googleSheetsId: null,
+        googleAccessToken: null,
+        googleRefreshToken: null,
+        googleTokenExpiry: null,
+        googleSheetsConnected: 0,
+      });
+
+      res.json({ message: "Google Sheets disconnected successfully" });
+    } catch (error) {
+      console.error("Sheets disconnect error:", error);
+      res.status(500).json({ message: "Failed to disconnect Google Sheets" });
+    }
+  });
+
+  // Manually sync existing bets to Google Sheets
+  app.post("/api/sheets/sync-bets", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      if (!user.googleSheetsId || !user.googleSheetsConnected) {
+        return res.status(400).json({ message: "Google Sheets not connected" });
+      }
+
+      const existingBets = await storage.getBetsByUser(user.id);
+      if (existingBets.length === 0) {
+        return res.json({ message: "No bets to sync", syncedBets: 0 });
+      }
+
+      const syncResult = await googleSheetsService.syncExistingBets(user, existingBets);
+      
+      // Update tokens if they were refreshed during sync
+      if (syncResult.newTokens) {
+        await storage.updateUser(user.id, {
+          googleAccessToken: syncResult.newTokens.accessToken,
+          googleTokenExpiry: syncResult.newTokens.expiresAt,
+        });
+      }
+      
+      res.json({ 
+        message: "Bets synced successfully",
+        syncedBets: existingBets.length,
+      });
+    } catch (error) {
+      console.error("Bet sync error:", error);
+      res.status(500).json({ 
+        message: "Failed to sync bets to Google Sheets",
+        details: error.message 
+      });
     }
   });
 

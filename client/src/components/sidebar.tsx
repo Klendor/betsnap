@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,12 +15,38 @@ import {
   Puzzle, 
   Globe, 
   Keyboard,
-  Settings
+  Settings,
+  Unlink,
+  RotateCcw,
+  AlertTriangle,
+  CheckCircle,
+  Loader2,
+  X
 } from "lucide-react";
 import type { User } from "@shared/schema";
 
+// Type definitions for API responses
+interface CompleteSetupResponse {
+  sheetId: string;
+  message: string;
+  url: string;
+  syncedBets: number;
+}
+
+interface SyncBetsResponse {
+  message: string;
+  syncedBets: number;
+}
+
+interface DisconnectResponse {
+  message: string;
+}
+
 export default function Sidebar() {
-  const [isCreatingSheet, setIsCreatingSheet] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [authWindow, setAuthWindow] = useState<Window | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -32,36 +58,191 @@ export default function Sidebar() {
     queryKey: ['/api/user/stats'],
   });
 
-  const createSheetMutation = useMutation({
+  // Listen for OAuth completion messages
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      
+      console.log('Received OAuth message:', event.data);
+      
+      if (event.data.type === 'GOOGLE_AUTH_SUCCESS') {
+        const { tokens } = event.data;
+        completeGoogleSetup(tokens);
+        if (authWindow) {
+          authWindow.close();
+          setAuthWindow(null);
+        }
+      } else if (event.data.type === 'GOOGLE_AUTH_CANCELLED') {
+        setIsConnecting(false);
+        if (authWindow) {
+          authWindow.close();
+          setAuthWindow(null);
+        }
+        toast({
+          title: "Authorization cancelled",
+          description: "Google Sheets connection was cancelled. You can try again anytime.",
+          variant: "default",
+        });
+      } else if (event.data.type === 'GOOGLE_AUTH_FAILED' || event.data.type === 'GOOGLE_AUTH_ERROR') {
+        setIsConnecting(false);
+        if (authWindow) {
+          authWindow.close();
+          setAuthWindow(null);
+        }
+        toast({
+          title: "Connection failed",
+          description: event.data.error || "Failed to connect to Google Sheets. Please try again.",
+          variant: "destructive",
+        });
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [authWindow, toast]);
+
+  const initiateGoogleAuthMutation = useMutation({
     mutationFn: async () => {
-      return await apiRequest('POST', '/api/sheets/create', {});
+      return await apiRequest('GET', '/api/auth/google');
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/user'] });
-      toast({
-        title: "Google Sheet created!",
-        description: "Your betting tracker spreadsheet is ready.",
-      });
-      setIsCreatingSheet(false);
-      // Open the sheet in a new tab
-      if (data.url) {
-        window.open(data.url, '_blank');
+    onSuccess: async (response) => {
+      try {
+        const data = await response.json();
+        if (data.authUrl) {
+          console.log('Opening Google OAuth popup:', data.authUrl);
+          const popup = window.open(
+            data.authUrl,
+            'google-auth',
+            'width=500,height=600,left=' + (window.screen.width / 2 - 250) + ',top=' + (window.screen.height / 2 - 300)
+          );
+          setAuthWindow(popup);
+          
+          // Check if popup was closed manually
+          const checkClosed = setInterval(() => {
+            if (popup?.closed) {
+              clearInterval(checkClosed);
+              setIsConnecting(false);
+              setAuthWindow(null);
+              toast({
+                title: "Authorization cancelled",
+                description: "Google Sheets connection was cancelled.",
+              });
+            }
+          }, 1000);
+        } else {
+          throw new Error('No authorization URL received');
+        }
+      } catch (error) {
+        console.error('Failed to parse auth response:', error);
+        setIsConnecting(false);
+        throw error;
       }
     },
-    onError: (error) => {
-      console.error('Sheet creation failed:', error);
+    onError: (error: any) => {
+      console.error('Google auth initiation failed:', error);
+      setIsConnecting(false);
       toast({
-        title: "Failed to create sheet",
-        description: "Please try again or check your Google account permissions.",
+        title: "Connection failed",
+        description: error.message || "Failed to start Google authorization. Please check your connection and try again.",
         variant: "destructive",
       });
-      setIsCreatingSheet(false);
     },
   });
 
-  const handleCreateSheet = () => {
-    setIsCreatingSheet(true);
-    createSheetMutation.mutate();
+  const completeSetupMutation = useMutation<CompleteSetupResponse, Error, any>({
+    mutationFn: async (tokens: any) => {
+      const response = await apiRequest('POST', '/api/sheets/complete-setup', tokens);
+      return await response.json();
+    },
+    onSuccess: (data: CompleteSetupResponse) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/user'] });
+      setIsConnecting(false);
+      
+      toast({
+        title: "Google Sheets connected!",
+        description: `Your betting tracker is ready with ${data.syncedBets || 0} existing bets synced.`,
+      });
+      
+      // Open the sheet in a new tab
+      if (data.url) {
+        setTimeout(() => window.open(data.url, '_blank'), 1000);
+      }
+    },
+    onError: (error: Error) => {
+      console.error('Setup completion failed:', error);
+      setIsConnecting(false);
+      toast({
+        title: "Setup failed",
+        description: error.message || "Failed to complete Google Sheets setup. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const syncBetsMutation = useMutation<SyncBetsResponse, Error>({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', '/api/sheets/sync-bets', {});
+      return await response.json();
+    },
+    onSuccess: (data: SyncBetsResponse) => {
+      setIsSyncing(false);
+      toast({
+        title: "Sync completed!",
+        description: `Successfully synced ${data.syncedBets} bets to your Google Sheet.`,
+      });
+    },
+    onError: (error: Error) => {
+      console.error('Sync failed:', error);
+      setIsSyncing(false);
+      toast({
+        title: "Sync failed",
+        description: error.message || "Failed to sync bets. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const disconnectMutation = useMutation<DisconnectResponse, Error>({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', '/api/sheets/disconnect', {});
+      return await response.json();
+    },
+    onSuccess: (data: DisconnectResponse) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/user'] });
+      setIsDisconnecting(false);
+      toast({
+        title: "Disconnected successfully",
+        description: "Google Sheets integration has been disconnected.",
+      });
+    },
+    onError: (error: Error) => {
+      console.error('Disconnect failed:', error);
+      setIsDisconnecting(false);
+      toast({
+        title: "Disconnect failed",
+        description: error.message || "Failed to disconnect Google Sheets. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const completeGoogleSetup = (tokens: any) => {
+    completeSetupMutation.mutate(tokens);
+  };
+
+  const handleConnectGoogleSheets = () => {
+    setIsConnecting(true);
+    initiateGoogleAuthMutation.mutate();
+  };
+
+  const handleSyncBets = () => {
+    setIsSyncing(true);
+    syncBetsMutation.mutate();
+  };
+
+  const handleDisconnect = () => {
+    setIsDisconnecting(true);
+    disconnectMutation.mutate();
   };
 
   const handleOpenSheet = () => {
@@ -70,6 +251,9 @@ export default function Sidebar() {
     }
   };
 
+  const isConnected = user?.googleSheetsConnected === 1 && user?.googleSheetsId;
+  const isProcessing = isConnecting || completeSetupMutation.isPending;
+
   return (
     <div className="space-y-6" data-testid="sidebar">
       {/* Google Sheets Integration */}
@@ -77,23 +261,31 @@ export default function Sidebar() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-lg font-semibold">Google Sheets</CardTitle>
-            <div 
-              className={`w-2 h-2 rounded-full ${user?.googleSheetsId ? 'bg-accent' : 'bg-muted'}`} 
-              title={user?.googleSheetsId ? 'Connected' : 'Not connected'}
-              data-testid="connection-status"
-            />
+            <div className="flex items-center space-x-2">
+              {isConnected && (
+                <Badge variant="secondary" className="text-xs bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+                  Connected
+                </Badge>
+              )}
+              <div 
+                className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-muted'}`} 
+                title={isConnected ? 'Connected and syncing' : 'Not connected'}
+                data-testid="connection-status"
+              />
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          {user?.googleSheetsId ? (
+          {isConnected ? (
             <>
-              <div className="flex items-center space-x-3 p-3 bg-muted/30 rounded-lg">
-                <Table className="text-accent w-5 h-5" />
+              <div className="flex items-center space-x-3 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+                <CheckCircle className="text-green-600 w-5 h-5" />
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">BetSnap Tracker 2024</p>
-                  <p className="text-xs text-muted-foreground">Synced automatically</p>
+                  <p className="text-sm font-medium text-foreground">BetSnap Tracker {new Date().getFullYear()}</p>
+                  <p className="text-xs text-muted-foreground">Auto-sync enabled • Real-time updates</p>
                 </div>
               </div>
+              
               <div className="flex space-x-2">
                 <Button 
                   className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground" 
@@ -104,29 +296,90 @@ export default function Sidebar() {
                   <ExternalLink className="w-4 h-4 mr-2" />
                   Open Sheet
                 </Button>
-                <Button variant="outline" size="sm" data-testid="button-sync-sheet">
-                  <RefreshCw className="w-4 h-4" />
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleSyncBets}
+                  disabled={isSyncing}
+                  data-testid="button-sync-sheet"
+                  title="Manually sync all bets"
+                >
+                  {isSyncing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="w-4 h-4" />
+                  )}
                 </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleDisconnect}
+                  disabled={isDisconnecting}
+                  data-testid="button-disconnect-sheet"
+                  title="Disconnect Google Sheets"
+                  className="text-destructive hover:text-destructive"
+                >
+                  {isDisconnecting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Unlink className="w-4 h-4" />
+                  )}
+                </Button>
+              </div>
+              
+              <div className="text-xs text-muted-foreground flex items-center space-x-1">
+                <CheckCircle className="w-3 h-3" />
+                <span>New bets sync automatically</span>
               </div>
             </>
           ) : (
             <div className="text-center py-4">
-              <p className="text-sm text-muted-foreground mb-4">
-                Connect your Google account to automatically sync your bets to a spreadsheet.
-              </p>
-              <Button 
-                onClick={handleCreateSheet}
-                disabled={isCreatingSheet}
-                className="bg-accent hover:bg-accent/90 text-accent-foreground"
-                data-testid="button-create-sheet"
-              >
-                {isCreatingSheet ? (
-                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
+              <div className="mb-4">
+                <Table className="w-12 h-12 mx-auto text-muted-foreground mb-3" />
+                <p className="text-sm text-muted-foreground mb-2">
+                  Connect your Google account to automatically sync your bets to a beautiful spreadsheet.
+                </p>
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <div className="flex items-center justify-center space-x-1">
+                    <Check className="w-3 h-3 text-green-500" />
+                    <span>Real-time bet synchronization</span>
+                  </div>
+                  <div className="flex items-center justify-center space-x-1">
+                    <Check className="w-3 h-3 text-green-500" />
+                    <span>Advanced analytics & charts</span>
+                  </div>
+                  <div className="flex items-center justify-center space-x-1">
+                    <Check className="w-3 h-3 text-green-500" />
+                    <span>Monthly performance tracking</span>
+                  </div>
+                </div>
+              </div>
+              
+              {isProcessing ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-center space-x-2 text-sm text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>
+                      {isConnecting ? 'Connecting to Google...' : 'Setting up your tracker...'}
+                    </span>
+                  </div>
+                  {isConnecting && (
+                    <p className="text-xs text-muted-foreground">
+                      Please complete the authorization in the popup window
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <Button 
+                  onClick={handleConnectGoogleSheets}
+                  disabled={isProcessing}
+                  className="bg-accent hover:bg-accent/90 text-accent-foreground min-w-[140px]"
+                  data-testid="button-connect-google"
+                >
                   <Table className="w-4 h-4 mr-2" />
-                )}
-                {isCreatingSheet ? 'Creating...' : 'Create Sheet'}
-              </Button>
+                  Connect Google
+                </Button>
+              )}
             </div>
           )}
         </CardContent>
@@ -156,7 +409,7 @@ export default function Sidebar() {
                 </div>
                 <div className="flex items-center text-sm">
                   <Check className="text-accent w-4 h-4 mr-2" />
-                  <span className="text-foreground">Custom templates</span>
+                  <span className="text-foreground">Google Sheets integration</span>
                 </div>
                 <div className="flex items-center text-sm">
                   <Check className="text-accent w-4 h-4 mr-2" />
@@ -165,7 +418,7 @@ export default function Sidebar() {
               </div>
               <Separator />
               <div>
-                <p className="text-xs text-muted-foreground">Valid until March 15, 2024</p>
+                <p className="text-xs text-muted-foreground">Valid until March 15, 2025</p>
                 <Button 
                   className="w-full mt-2 bg-accent hover:bg-accent/90 text-accent-foreground" 
                   size="sm"
@@ -179,12 +432,12 @@ export default function Sidebar() {
             <>
               <div className="space-y-2">
                 <p className="text-sm text-muted-foreground">
-                  Upgrade to Premium for unlimited captures and advanced features.
+                  Upgrade to Premium for unlimited captures and Google Sheets integration.
                 </p>
                 <ul className="text-xs text-muted-foreground space-y-1">
                   <li>• 5 captures per day limit</li>
                   <li>• Basic analytics only</li>
-                  <li>• Standard templates</li>
+                  <li>• No Google Sheets sync</li>
                 </ul>
               </div>
               <Button 
@@ -234,6 +487,16 @@ export default function Sidebar() {
               <span className="text-sm text-muted-foreground">Pending</span>
               <span className="text-sm font-medium text-foreground">{stats.pendingBets}</span>
             </div>
+            
+            {isConnected && (
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">Google Sheets</span>
+                <span className="text-green-600 flex items-center space-x-1">
+                  <CheckCircle className="w-3 h-3" />
+                  <span>Synced</span>
+                </span>
+              </div>
+            )}
             
             <Button 
               variant="outline" 
