@@ -101,41 +101,36 @@ export default function Sidebar() {
     return () => window.removeEventListener('message', handleMessage);
   }, [authWindow, toast]);
 
-  const initiateGoogleAuthMutation = useMutation({
+  const initiateGoogleAuthMutation = useMutation<{ authUrl: string }, Error>({
     mutationFn: async () => {
-      return await apiRequest('GET', '/api/auth/google');
+      const response = await apiRequest('GET', '/api/auth/google');
+      return await response.json();
     },
-    onSuccess: async (response) => {
-      try {
-        const data = await response.json();
-        if (data.authUrl) {
-          console.log('Opening Google OAuth popup:', data.authUrl);
-          const popup = window.open(
-            data.authUrl,
-            'google-auth',
-            'width=500,height=600,left=' + (window.screen.width / 2 - 250) + ',top=' + (window.screen.height / 2 - 300)
-          );
-          setAuthWindow(popup);
-          
-          // Check if popup was closed manually
-          const checkClosed = setInterval(() => {
-            if (popup?.closed) {
-              clearInterval(checkClosed);
-              setIsConnecting(false);
-              setAuthWindow(null);
-              toast({
-                title: "Authorization cancelled",
-                description: "Google Sheets connection was cancelled.",
-              });
-            }
-          }, 1000);
-        } else {
-          throw new Error('No authorization URL received');
-        }
-      } catch (error) {
-        console.error('Failed to parse auth response:', error);
+    onSuccess: (data) => {
+      if (data.authUrl) {
+        console.log('Opening Google OAuth popup:', data.authUrl);
+        const popup = window.open(
+          data.authUrl,
+          'google-auth',
+          'width=500,height=600,left=' + (window.screen.width / 2 - 250) + ',top=' + (window.screen.height / 2 - 300)
+        );
+        setAuthWindow(popup);
+        
+        // Check if popup was closed manually
+        const checkClosed = setInterval(() => {
+          if (popup?.closed) {
+            clearInterval(checkClosed);
+            setIsConnecting(false);
+            setAuthWindow(null);
+            toast({
+              title: "Authorization cancelled",
+              description: "Google Sheets connection was cancelled.",
+            });
+          }
+        }, 1000);
+      } else {
         setIsConnecting(false);
-        throw error;
+        throw new Error('No authorization URL received');
       }
     },
     onError: (error: any) => {
