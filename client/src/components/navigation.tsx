@@ -50,9 +50,13 @@ export default function Navigation() {
                 <a href="#" className="text-muted-foreground hover:text-foreground transition-colors" data-testid="nav-bets">
                   Bets
                 </a>
-                <a href="#" className="text-muted-foreground hover:text-foreground transition-colors" data-testid="nav-analytics">
+                <Link 
+                  href="/analytics" 
+                  className="text-muted-foreground hover:text-foreground transition-colors" 
+                  data-testid="nav-analytics"
+                >
                   Analytics
-                </a>
+                </Link>
               </div>
             )}
           </div>
@@ -93,9 +97,11 @@ export default function Navigation() {
                       <Settings className="mr-2 h-4 w-4" />
                       <span>Settings</span>
                     </DropdownMenuItem>
-                    <DropdownMenuItem data-testid="menu-analytics">
-                      <BarChart3 className="mr-2 h-4 w-4" />
-                      <span>Analytics</span>
+                    <DropdownMenuItem asChild data-testid="menu-analytics">
+                      <Link href="/analytics" className="flex items-center">
+                        <BarChart3 className="mr-2 h-4 w-4" />
+                        <span>Analytics</span>
+                      </Link>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem 

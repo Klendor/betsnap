@@ -26,6 +26,27 @@ export interface IStorage {
     pendingBets: number;
   }>;
 
+  // Advanced Analytics methods
+  getAdvancedAnalytics(userId: string, dateFrom?: Date, dateTo?: Date): Promise<{
+    profitOverTime: Array<{ date: string; profit: number; cumulativeProfit: number }>;
+    sportPerformance: Array<{ sport: string; totalBets: number; winRate: number; profit: number; roi: number }>;
+    betTypeAnalysis: Array<{ betType: string; totalBets: number; winRate: number; profit: number; avgOdds: string }>;
+    profitByDayOfWeek: Array<{ day: string; profit: number; betCount: number }>;
+    streakAnalysis: {
+      currentStreak: { type: 'win' | 'loss', count: number };
+      longestWinStreak: number;
+      longestLoseStreak: number;
+    };
+    betSizeDistribution: Array<{ range: string; count: number; profit: number }>;
+    monthlyTrends: Array<{ month: string; profit: number; betCount: number; winRate: number }>;
+    roiMetrics: {
+      overall: number;
+      lastMonth: number;
+      bestMonth: number;
+      worstMonth: number;
+    };
+  }>;
+
   // Bet History methods
   getBetHistory(betId: string): Promise<BetHistory[]>;
   createBetHistory(history: InsertBetHistory): Promise<BetHistory>;
@@ -137,7 +158,11 @@ export class MemStorage implements IStorage {
   async getBetsByUser(userId: string): Promise<Bet[]> {
     return Array.from(this.bets.values())
       .filter(bet => bet.userId === userId)
-      .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+      .sort((a, b) => {
+        const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bDate - aDate;
+      });
   }
 
   async createBet(insertBet: InsertBet): Promise<Bet> {
@@ -328,6 +353,307 @@ export class MemStorage implements IStorage {
     };
   }
 
+  async getAdvancedAnalytics(userId: string, dateFrom?: Date, dateTo?: Date): Promise<{
+    profitOverTime: Array<{ date: string; profit: number; cumulativeProfit: number }>;
+    sportPerformance: Array<{ sport: string; totalBets: number; winRate: number; profit: number; roi: number }>;
+    betTypeAnalysis: Array<{ betType: string; totalBets: number; winRate: number; profit: number; avgOdds: string }>;
+    profitByDayOfWeek: Array<{ day: string; profit: number; betCount: number }>;
+    streakAnalysis: {
+      currentStreak: { type: 'win' | 'loss', count: number };
+      longestWinStreak: number;
+      longestLoseStreak: number;
+    };
+    betSizeDistribution: Array<{ range: string; count: number; profit: number }>;
+    monthlyTrends: Array<{ month: string; profit: number; betCount: number; winRate: number }>;
+    roiMetrics: {
+      overall: number;
+      lastMonth: number;
+      bestMonth: number;
+      worstMonth: number;
+    };
+  }> {
+    let userBets = await this.getBetsByUser(userId);
+    
+    // Apply date filtering if provided
+    if (dateFrom || dateTo) {
+      userBets = userBets.filter(bet => {
+        if (!bet.createdAt) return false; // Skip bets without creation date
+        const betDate = new Date(bet.createdAt);
+        if (dateFrom && betDate < dateFrom) return false;
+        if (dateTo && betDate > dateTo) return false;
+        return true;
+      });
+    }
+    
+    const settledBets = userBets.filter(bet => bet.status !== "pending");
+    
+    // Profit over time
+    const profitOverTime = this.calculateProfitOverTime(settledBets);
+    
+    // Sport performance
+    const sportPerformance = this.analyzeSportPerformance(settledBets);
+    
+    // Bet type analysis
+    const betTypeAnalysis = this.analyzeBetTypes(settledBets);
+    
+    // Profit by day of week
+    const profitByDayOfWeek = this.analyzeProfitByDayOfWeek(settledBets);
+    
+    // Streak analysis
+    const streakAnalysis = this.analyzeStreaks(settledBets);
+    
+    // Bet size distribution
+    const betSizeDistribution = this.analyzeBetSizeDistribution(settledBets);
+    
+    // Monthly trends
+    const monthlyTrends = this.analyzeMonthlyTrends(settledBets);
+    
+    // ROI metrics
+    const roiMetrics = this.calculateROIMetrics(settledBets);
+    
+    return {
+      profitOverTime,
+      sportPerformance,
+      betTypeAnalysis,
+      profitByDayOfWeek,
+      streakAnalysis,
+      betSizeDistribution,
+      monthlyTrends,
+      roiMetrics,
+    };
+  }
+  
+  private calculateProfitOverTime(bets: Bet[]): Array<{ date: string; profit: number; cumulativeProfit: number }> {
+    // Filter out bets without creation dates first
+    const validBets = bets.filter(bet => bet.createdAt);
+    const sortedBets = validBets.sort((a, b) => new Date(a.createdAt!).getTime() - new Date(b.createdAt!).getTime());
+    
+    let cumulativeProfit = 0;
+    const result: Array<{ date: string; profit: number; cumulativeProfit: number }> = [];
+    
+    sortedBets.forEach(bet => {
+      const profit = this.calculateBetProfit(bet);
+      cumulativeProfit += profit;
+      
+      result.push({
+        date: new Date(bet.createdAt!).toISOString().split('T')[0], // Safe after filter above
+        profit,
+        cumulativeProfit,
+      });
+    });
+    
+    return result;
+  }
+  
+  private analyzeSportPerformance(bets: Bet[]): Array<{ sport: string; totalBets: number; winRate: number; profit: number; roi: number }> {
+    const sportMap = new Map<string, { totalBets: number; winCount: number; totalStake: number; totalProfit: number }>();
+    
+    bets.forEach(bet => {
+      const sport = bet.sport;
+      const current = sportMap.get(sport) || { totalBets: 0, winCount: 0, totalStake: 0, totalProfit: 0 };
+      
+      current.totalBets++;
+      if (bet.status === "won") current.winCount++;
+      current.totalStake += parseFloat(bet.stake);
+      current.totalProfit += this.calculateBetProfit(bet);
+      
+      sportMap.set(sport, current);
+    });
+    
+    return Array.from(sportMap.entries()).map(([sport, data]) => ({
+      sport,
+      totalBets: data.totalBets,
+      winRate: data.totalBets > 0 ? Math.round((data.winCount / data.totalBets) * 100 * 10) / 10 : 0,
+      profit: Math.round(data.totalProfit * 100) / 100,
+      roi: data.totalStake > 0 ? Math.round((data.totalProfit / data.totalStake) * 100 * 10) / 10 : 0,
+    })).sort((a, b) => b.profit - a.profit);
+  }
+  
+  private analyzeBetTypes(bets: Bet[]): Array<{ betType: string; totalBets: number; winRate: number; profit: number; avgOdds: string }> {
+    const betTypeMap = new Map<string, { totalBets: number; winCount: number; totalProfit: number; oddsSum: number }>();
+    
+    bets.forEach(bet => {
+      const betType = bet.betType;
+      const current = betTypeMap.get(betType) || { totalBets: 0, winCount: 0, totalProfit: 0, oddsSum: 0 };
+      
+      current.totalBets++;
+      if (bet.status === "won") current.winCount++;
+      current.totalProfit += this.calculateBetProfit(bet);
+      
+      // Parse odds for averaging (handle +/- format)
+      const odds = bet.odds.replace(/[^-\d]/g, '');
+      current.oddsSum += parseInt(odds) || 0;
+      
+      betTypeMap.set(betType, current);
+    });
+    
+    return Array.from(betTypeMap.entries()).map(([betType, data]) => ({
+      betType,
+      totalBets: data.totalBets,
+      winRate: data.totalBets > 0 ? Math.round((data.winCount / data.totalBets) * 100 * 10) / 10 : 0,
+      profit: Math.round(data.totalProfit * 100) / 100,
+      avgOdds: data.totalBets > 0 ? (data.oddsSum >= 0 ? '+' : '') + Math.round(data.oddsSum / data.totalBets).toString() : '+0',
+    })).sort((a, b) => b.totalBets - a.totalBets);
+  }
+  
+  private analyzeProfitByDayOfWeek(bets: Bet[]): Array<{ day: string; profit: number; betCount: number }> {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dayMap = new Map<string, { profit: number; betCount: number }>();
+    
+    days.forEach(day => dayMap.set(day, { profit: 0, betCount: 0 }));
+    
+    bets.forEach(bet => {
+      if (!bet.createdAt) return; // Skip bets without creation date
+      const day = days[new Date(bet.createdAt).getDay()];
+      const current = dayMap.get(day)!;
+      current.profit += this.calculateBetProfit(bet);
+      current.betCount++;
+    });
+    
+    return days.map(day => ({
+      day,
+      profit: Math.round(dayMap.get(day)!.profit * 100) / 100,
+      betCount: dayMap.get(day)!.betCount,
+    }));
+  }
+  
+  private analyzeStreaks(bets: Bet[]): {
+    currentStreak: { type: 'win' | 'loss', count: number };
+    longestWinStreak: number;
+    longestLoseStreak: number;
+  } {
+    // Filter out bets without creation dates first
+    const validBets = bets.filter(bet => bet.createdAt);
+    const sortedBets = validBets.sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+    
+    let currentStreak = { type: 'win' as const, count: 0 };
+    let longestWinStreak = 0;
+    let longestLoseStreak = 0;
+    let currentWinStreak = 0;
+    let currentLoseStreak = 0;
+    
+    for (const bet of sortedBets) {
+      if (bet.status === "won") {
+        currentWinStreak++;
+        currentLoseStreak = 0;
+        longestWinStreak = Math.max(longestWinStreak, currentWinStreak);
+        
+        if (currentStreak.count === 0) {
+          currentStreak = { type: 'win', count: currentWinStreak };
+        } else if (currentStreak.type === 'win') {
+          currentStreak.count = currentWinStreak;
+        }
+      } else if (bet.status === "lost") {
+        currentLoseStreak++;
+        currentWinStreak = 0;
+        longestLoseStreak = Math.max(longestLoseStreak, currentLoseStreak);
+        
+        if (currentStreak.count === 0) {
+          currentStreak = { type: 'loss', count: currentLoseStreak };
+        } else if (currentStreak.type === 'loss') {
+          currentStreak.count = currentLoseStreak;
+        }
+      }
+    }
+    
+    return { currentStreak, longestWinStreak, longestLoseStreak };
+  }
+  
+  private analyzeBetSizeDistribution(bets: Bet[]): Array<{ range: string; count: number; profit: number }> {
+    const ranges = [
+      { label: '$1-25', min: 1, max: 25 },
+      { label: '$26-50', min: 26, max: 50 },
+      { label: '$51-100', min: 51, max: 100 },
+      { label: '$101-250', min: 101, max: 250 },
+      { label: '$251+', min: 251, max: Infinity },
+    ];
+    
+    const rangeMap = new Map<string, { count: number; profit: number }>();
+    ranges.forEach(range => rangeMap.set(range.label, { count: 0, profit: 0 }));
+    
+    bets.forEach(bet => {
+      const stake = parseFloat(bet.stake);
+      const range = ranges.find(r => stake >= r.min && stake <= r.max);
+      if (range) {
+        const current = rangeMap.get(range.label)!;
+        current.count++;
+        current.profit += this.calculateBetProfit(bet);
+      }
+    });
+    
+    return ranges.map(range => ({
+      range: range.label,
+      count: rangeMap.get(range.label)!.count,
+      profit: Math.round(rangeMap.get(range.label)!.profit * 100) / 100,
+    }));
+  }
+  
+  private analyzeMonthlyTrends(bets: Bet[]): Array<{ month: string; profit: number; betCount: number; winRate: number }> {
+    const monthMap = new Map<string, { profit: number; betCount: number; winCount: number }>();
+    
+    bets.forEach(bet => {
+      if (!bet.createdAt) return; // Skip bets without creation date
+      const month = new Date(bet.createdAt).toISOString().slice(0, 7); // YYYY-MM format
+      const current = monthMap.get(month) || { profit: 0, betCount: 0, winCount: 0 };
+      
+      current.profit += this.calculateBetProfit(bet);
+      current.betCount++;
+      if (bet.status === "won") current.winCount++;
+      
+      monthMap.set(month, current);
+    });
+    
+    return Array.from(monthMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, data]) => ({
+        month,
+        profit: Math.round(data.profit * 100) / 100,
+        betCount: data.betCount,
+        winRate: data.betCount > 0 ? Math.round((data.winCount / data.betCount) * 100 * 10) / 10 : 0,
+      }));
+  }
+  
+  private calculateROIMetrics(bets: Bet[]): {
+    overall: number;
+    lastMonth: number;
+    bestMonth: number;
+    worstMonth: number;
+  } {
+    const totalStake = bets.reduce((sum, bet) => sum + parseFloat(bet.stake), 0);
+    const totalProfit = bets.reduce((sum, bet) => sum + this.calculateBetProfit(bet), 0);
+    const overall = totalStake > 0 ? Math.round((totalProfit / totalStake) * 100 * 10) / 10 : 0;
+    
+    // Last month ROI
+    const lastMonth = new Date();
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    const lastMonthBets = bets.filter(bet => bet.createdAt && new Date(bet.createdAt) >= lastMonth);
+    const lastMonthStake = lastMonthBets.reduce((sum, bet) => sum + parseFloat(bet.stake), 0);
+    const lastMonthProfit = lastMonthBets.reduce((sum, bet) => sum + this.calculateBetProfit(bet), 0);
+    const lastMonthROI = lastMonthStake > 0 ? Math.round((lastMonthProfit / lastMonthStake) * 100 * 10) / 10 : 0;
+    
+    // Best and worst month ROI
+    const monthlyTrends = this.analyzeMonthlyTrends(bets);
+    const monthlyROIs = monthlyTrends.map(trend => {
+      const monthBets = bets.filter(bet => bet.createdAt && new Date(bet.createdAt).toISOString().startsWith(trend.month));
+      const stake = monthBets.reduce((sum, bet) => sum + parseFloat(bet.stake), 0);
+      return stake > 0 ? Math.round((trend.profit / stake) * 100 * 10) / 10 : 0;
+    });
+    
+    const bestMonth = monthlyROIs.length > 0 ? Math.max(...monthlyROIs) : 0;
+    const worstMonth = monthlyROIs.length > 0 ? Math.min(...monthlyROIs) : 0;
+    
+    return { overall, lastMonth: lastMonthROI, bestMonth, worstMonth };
+  }
+  
+  private calculateBetProfit(bet: Bet): number {
+    if (bet.status === "won" && bet.actualPayout) {
+      return parseFloat(bet.actualPayout) - parseFloat(bet.stake);
+    } else if (bet.status === "lost") {
+      return -parseFloat(bet.stake);
+    }
+    return 0;
+  }
+
   // Screenshot methods
   async getScreenshot(id: string): Promise<Screenshot | undefined> {
     return this.screenshots.get(id);
@@ -336,7 +662,11 @@ export class MemStorage implements IStorage {
   async getScreenshotsByUser(userId: string): Promise<Screenshot[]> {
     return Array.from(this.screenshots.values())
       .filter(screenshot => screenshot.userId === userId)
-      .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+      .sort((a, b) => {
+        const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bDate - aDate;
+      });
   }
 
   async createScreenshot(insertScreenshot: InsertScreenshot): Promise<Screenshot> {
@@ -367,7 +697,11 @@ export class MemStorage implements IStorage {
   async getBetHistory(betId: string): Promise<BetHistory[]> {
     return Array.from(this.betHistories.values())
       .filter(history => history.betId === betId)
-      .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+      .sort((a, b) => {
+        const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bDate - aDate;
+      });
   }
 
   async createBetHistory(insertHistory: InsertBetHistory): Promise<BetHistory> {

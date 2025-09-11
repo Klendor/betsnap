@@ -139,6 +139,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get advanced analytics (requires authentication)
+  app.get("/api/user/analytics", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      // Parse optional date range from query params
+      const { dateFrom, dateTo } = req.query;
+      const fromDate = dateFrom ? new Date(dateFrom as string) : undefined;
+      const toDate = dateTo ? new Date(dateTo as string) : undefined;
+      
+      const analytics = await storage.getAdvancedAnalytics(user.id, fromDate, toDate);
+      res.json(analytics);
+    } catch (error) {
+      console.error("Analytics error:", error);
+      res.status(500).json({ message: "Failed to get analytics data" });
+    }
+  });
+
   // Get user bets (requires authentication)
   app.get("/api/bets", requireAuth, async (req, res) => {
     try {
