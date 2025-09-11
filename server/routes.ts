@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertBetSchema, updateBetSchema, insertScreenshotSchema, registerSchema, loginSchema } from "@shared/schema";
+import { insertBetSchema, updateBetSchema, insertScreenshotSchema, registerSchema, loginSchema, insertBankrollSchema, updateBankrollSchema, insertBankrollTransactionSchema, insertBankrollGoalSchema, updateBankrollGoalSchema } from "@shared/schema";
 import { requireAuth, getCurrentUser } from "./index";
 import { extractBetDataFromImage, validateBetData } from "./services/gemini";
 import { googleSheetsService } from "./services/googleSheets";
@@ -908,6 +908,469 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(templates);
     } catch (error) {
       res.status(500).json({ message: "Failed to get templates" });
+    }
+  });
+
+  // ============ BANKROLL MANAGEMENT ROUTES ============
+
+  // Get all user bankrolls
+  app.get("/api/bankrolls", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      const bankrolls = await storage.getBankrollsByUser(user.id);
+      res.json(bankrolls);
+    } catch (error) {
+      console.error("Get bankrolls error:", error);
+      res.status(500).json({ message: "Failed to get bankrolls" });
+    }
+  });
+
+  // Create new bankroll
+  app.post("/api/bankrolls", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const validatedData = insertBankrollSchema.parse({
+        ...req.body,
+        userId: user.id,
+      });
+      
+      const bankroll = await storage.createBankroll(validatedData);
+      res.json(bankroll);
+    } catch (error) {
+      console.error("Create bankroll error:", error);
+      res.status(400).json({ message: "Invalid bankroll data" });
+    }
+  });
+
+  // Get specific bankroll
+  app.get("/api/bankrolls/:id", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      res.json(bankroll);
+    } catch (error) {
+      console.error("Get bankroll error:", error);
+      res.status(500).json({ message: "Failed to get bankroll" });
+    }
+  });
+
+  // Update bankroll
+  app.patch("/api/bankrolls/:id", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const validatedUpdates = updateBankrollSchema.parse(req.body);
+      
+      const bankroll = await storage.updateBankroll(id, validatedUpdates, user.id);
+      if (!bankroll) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      res.json(bankroll);
+    } catch (error) {
+      console.error("Update bankroll error:", error);
+      res.status(400).json({ message: "Failed to update bankroll" });
+    }
+  });
+
+  // Delete bankroll
+  app.delete("/api/bankrolls/:id", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const deleted = await storage.deleteBankroll(id, user.id);
+      
+      if (!deleted) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      res.json({ message: "Bankroll deleted successfully" });
+    } catch (error) {
+      console.error("Delete bankroll error:", error);
+      if (error.message.includes("associated bets")) {
+        return res.status(400).json({ message: error.message });
+      }
+      res.status(500).json({ message: "Failed to delete bankroll" });
+    }
+  });
+
+  // Activate bankroll
+  app.post("/api/bankrolls/:id/activate", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.activateBankroll(id, user.id);
+      
+      if (!bankroll) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      res.json(bankroll);
+    } catch (error) {
+      console.error("Activate bankroll error:", error);
+      res.status(500).json({ message: "Failed to activate bankroll" });
+    }
+  });
+
+  // Get bankroll balance
+  app.get("/api/bankrolls/:id/balance", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const balance = await storage.getBankrollBalance(id);
+      res.json({ balance });
+    } catch (error) {
+      console.error("Get bankroll balance error:", error);
+      res.status(500).json({ message: "Failed to get bankroll balance" });
+    }
+  });
+
+  // Get bankroll transactions
+  app.get("/api/bankrolls/:id/transactions", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const transactions = await storage.getBankrollTransactions(id);
+      res.json(transactions);
+    } catch (error) {
+      console.error("Get bankroll transactions error:", error);
+      res.status(500).json({ message: "Failed to get transactions" });
+    }
+  });
+
+  // Create bankroll transaction
+  app.post("/api/bankrolls/:id/transactions", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const validatedData = insertBankrollTransactionSchema.parse({
+        ...req.body,
+        bankrollId: id,
+        userId: user.id,
+      });
+      
+      const transaction = await storage.createBankrollTransaction(validatedData);
+      res.json(transaction);
+    } catch (error) {
+      console.error("Create transaction error:", error);
+      res.status(400).json({ message: "Invalid transaction data" });
+    }
+  });
+
+  // Get bankroll goals
+  app.get("/api/bankrolls/:id/goals", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const goals = await storage.getBankrollGoals(id);
+      res.json(goals);
+    } catch (error) {
+      console.error("Get bankroll goals error:", error);
+      res.status(500).json({ message: "Failed to get goals" });
+    }
+  });
+
+  // Create bankroll goal
+  app.post("/api/bankrolls/:id/goals", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const validatedData = insertBankrollGoalSchema.parse({
+        ...req.body,
+        bankrollId: id,
+      });
+      
+      const goal = await storage.createBankrollGoal(validatedData);
+      res.json(goal);
+    } catch (error) {
+      console.error("Create goal error:", error);
+      res.status(400).json({ message: "Invalid goal data" });
+    }
+  });
+
+  // Update bankroll goal
+  app.patch("/api/bankrolls/:bankrollId/goals/:goalId", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { bankrollId, goalId } = req.params;
+      const bankroll = await storage.getBankroll(bankrollId);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const validatedUpdates = updateBankrollGoalSchema.parse(req.body);
+      const goal = await storage.updateBankrollGoal(goalId, validatedUpdates, user.id);
+      
+      if (!goal) {
+        return res.status(404).json({ message: "Goal not found" });
+      }
+      
+      res.json(goal);
+    } catch (error) {
+      console.error("Update goal error:", error);
+      res.status(400).json({ message: "Failed to update goal" });
+    }
+  });
+
+  // Delete bankroll goal
+  app.delete("/api/bankrolls/:bankrollId/goals/:goalId", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { bankrollId, goalId } = req.params;
+      const bankroll = await storage.getBankroll(bankrollId);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const deleted = await storage.deleteBankrollGoal(goalId, user.id);
+      if (!deleted) {
+        return res.status(404).json({ message: "Goal not found" });
+      }
+      
+      res.json({ message: "Goal deleted successfully" });
+    } catch (error) {
+      console.error("Delete goal error:", error);
+      res.status(500).json({ message: "Failed to delete goal" });
+    }
+  });
+
+  // Get bankroll analytics
+  app.get("/api/bankrolls/:id/analytics", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      // Parse optional date range from query params
+      const { dateFrom, dateTo } = req.query;
+      const fromDate = dateFrom ? new Date(dateFrom as string) : undefined;
+      const toDate = dateTo ? new Date(dateTo as string) : undefined;
+      
+      const analytics = await storage.getBankrollAnalytics(id, fromDate, toDate);
+      res.json(analytics);
+    } catch (error) {
+      console.error("Get bankroll analytics error:", error);
+      res.status(500).json({ message: "Failed to get analytics" });
+    }
+  });
+
+  // Risk management helper endpoints
+  app.get("/api/bankrolls/:id/risk/daily-limit", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const limitCheck = await storage.checkDailyLossLimit(id);
+      res.json(limitCheck);
+    } catch (error) {
+      console.error("Daily limit check error:", error);
+      res.status(500).json({ message: "Failed to check daily limit" });
+    }
+  });
+
+  app.get("/api/bankrolls/:id/risk/weekly-limit", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const limitCheck = await storage.checkWeeklyLossLimit(id);
+      res.json(limitCheck);
+    } catch (error) {
+      console.error("Weekly limit check error:", error);
+      res.status(500).json({ message: "Failed to check weekly limit" });
+    }
+  });
+
+  app.post("/api/bankrolls/:id/risk/kelly-bet-size", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const { winProbability, odds } = req.body;
+      
+      if (!winProbability || !odds) {
+        return res.status(400).json({ message: "winProbability and odds are required" });
+      }
+      
+      const kellyCalculation = await storage.calculateKellyBetSize(id, winProbability, odds);
+      res.json(kellyCalculation);
+    } catch (error) {
+      console.error("Kelly calculation error:", error);
+      res.status(500).json({ message: "Failed to calculate Kelly bet size" });
+    }
+  });
+
+  app.get("/api/bankrolls/:id/risk/max-bet-size", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const maxBetSize = await storage.getMaxBetSize(id);
+      res.json(maxBetSize);
+    } catch (error) {
+      console.error("Max bet size error:", error);
+      res.status(500).json({ message: "Failed to get max bet size" });
+    }
+  });
+
+  app.post("/api/bankrolls/:id/risk/validate-bet", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const { id } = req.params;
+      const bankroll = await storage.getBankroll(id);
+      
+      if (!bankroll || bankroll.userId !== user.id) {
+        return res.status(404).json({ message: "Bankroll not found" });
+      }
+      
+      const { stakeAmount } = req.body;
+      
+      if (!stakeAmount) {
+        return res.status(400).json({ message: "stakeAmount is required" });
+      }
+      
+      const validation = await storage.validateBetSize(id, parseFloat(stakeAmount));
+      res.json(validation);
+    } catch (error) {
+      console.error("Bet validation error:", error);
+      res.status(500).json({ message: "Failed to validate bet size" });
     }
   });
 

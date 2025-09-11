@@ -1,13 +1,16 @@
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import FileDropzone from "./file-dropzone";
 import { apiRequest } from "@/lib/queryClient";
-import { Camera, CloudUpload, Edit, Table, Loader2 } from "lucide-react";
+import { Camera, CloudUpload, Edit, Table, Loader2, Wallet, AlertTriangle } from "lucide-react";
 
 interface ExtractedData {
   sport: string;
@@ -19,11 +22,40 @@ interface ExtractedData {
   confidence: number;
 }
 
+interface Bankroll {
+  id: string;
+  name: string;
+  currency: string;
+  unitMode: string;
+  unitValue: string;
+  isActive: number;
+}
+
 export default function CaptureInterface() {
   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedBankrollId, setSelectedBankrollId] = useState<string>("");
+  const [stakeUnits, setStakeUnits] = useState<string>("");
   const { toast } = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
+
+  // Fetch user's bankrolls
+  const { data: bankrolls = [], isLoading: bankrollsLoading } = useQuery<Bankroll[]>({
+    queryKey: ['/api/bankrolls'],
+    enabled: !!user,
+  });
+
+  // Get the selected bankroll details
+  const selectedBankroll = bankrolls.find(b => b.id === selectedBankrollId);
+
+  // Auto-select active bankroll on load
+  useEffect(() => {
+    const activeBankroll = bankrolls.find(b => b.isActive === 1);
+    if (activeBankroll && !selectedBankrollId) {
+      setSelectedBankrollId(activeBankroll.id);
+    }
+  }, [bankrolls, selectedBankrollId]);
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -91,7 +123,24 @@ export default function CaptureInterface() {
   };
 
   const handleSaveBet = () => {
-    if (!extractedData) return;
+    if (!extractedData || !selectedBankrollId) {
+      toast({
+        title: "Validation Error",
+        description: "Please select a bankroll before saving the bet",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const stake = parseFloat(extractedData.stake);
+    if (isNaN(stake) || stake <= 0) {
+      toast({
+        title: "Validation Error", 
+        description: "Invalid stake amount",
+        variant: "destructive",
+      });
+      return;
+    }
 
     const betData = {
       sport: extractedData.sport,
@@ -101,6 +150,7 @@ export default function CaptureInterface() {
       stake: extractedData.stake,
       potentialPayout: extractedData.potentialPayout,
       status: "pending",
+      bankrollId: selectedBankrollId,
       extractedData: JSON.stringify(extractedData),
     };
 
@@ -110,6 +160,50 @@ export default function CaptureInterface() {
   const handleDataChange = (field: keyof ExtractedData, value: string) => {
     if (!extractedData) return;
     setExtractedData({ ...extractedData, [field]: value });
+    
+    // Auto-update units when stake changes
+    if (field === 'stake' && selectedBankroll) {
+      const stakeValue = parseFloat(value);
+      if (!isNaN(stakeValue) && stakeValue > 0) {
+        const unitValue = parseFloat(selectedBankroll.unitValue);
+        if (selectedBankroll.unitMode === 'fixed') {
+          const units = stakeValue / unitValue;
+          setStakeUnits(units.toFixed(2));
+        } else {
+          // For percent mode, units = stake percentage / unit percentage
+          const balanceNeeded = stakeValue / (unitValue); // Rough estimate
+          setStakeUnits((stakeValue / unitValue).toFixed(2));
+        }
+      }
+    }
+  };
+
+  const handleUnitsChange = (units: string) => {
+    setStakeUnits(units);
+    
+    if (!extractedData || !selectedBankroll) return;
+    
+    const unitsValue = parseFloat(units);
+    if (!isNaN(unitsValue) && unitsValue > 0) {
+      const unitValue = parseFloat(selectedBankroll.unitValue);
+      let stakeValue: number;
+      
+      if (selectedBankroll.unitMode === 'fixed') {
+        stakeValue = unitsValue * unitValue;
+      } else {
+        // For percent mode, this would need current balance but we'll use a simple calculation
+        stakeValue = unitsValue * unitValue;
+      }
+      
+      setExtractedData({ ...extractedData, stake: stakeValue.toFixed(2) });
+    }
+  };
+
+  const formatCurrency = (amount: number, currency: string = "USD") => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency,
+    }).format(amount);
   };
 
   return (
@@ -142,8 +236,74 @@ export default function CaptureInterface() {
           </div>
         )}
 
+        {/* Bankroll Selection */}
+        {bankrolls.length > 0 && (
+          <div className="space-y-3">
+            <Label className="text-sm font-medium text-foreground">Select Bankroll</Label>
+            <Select value={selectedBankrollId} onValueChange={setSelectedBankrollId}>
+              <SelectTrigger data-testid="select-bankroll">
+                <SelectValue placeholder="Choose a bankroll for this bet">
+                  {selectedBankroll && (
+                    <div className="flex items-center space-x-2">
+                      <Wallet className="h-4 w-4" />
+                      <span>{selectedBankroll.name}</span>
+                      {selectedBankroll.isActive === 1 && (
+                        <span className="text-xs bg-primary/20 text-primary px-1 rounded">Active</span>
+                      )}
+                    </div>
+                  )}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {bankrolls.map((bankroll) => (
+                  <SelectItem key={bankroll.id} value={bankroll.id}>
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center space-x-2">
+                        <Wallet className="h-4 w-4" />
+                        <span>{bankroll.name}</span>
+                        {bankroll.isActive === 1 && (
+                          <span className="text-xs bg-primary/20 text-primary px-1 rounded">Active</span>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground ml-2">
+                        {bankroll.currency} • {bankroll.unitMode === 'fixed' ? 'Fixed' : 'Percent'}
+                      </span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            
+            {selectedBankroll && (
+              <div className="text-xs text-muted-foreground bg-muted/50 p-2 rounded">
+                <div className="flex justify-between">
+                  <span>Unit Value:</span>
+                  <span>
+                    {selectedBankroll.unitMode === 'fixed' 
+                      ? formatCurrency(parseFloat(selectedBankroll.unitValue), selectedBankroll.currency)
+                      : `${(parseFloat(selectedBankroll.unitValue) * 100).toFixed(2)}%`
+                    }
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {bankrolls.length === 0 && !bankrollsLoading && (
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              You need to create a bankroll first. 
+              <Button variant="link" className="p-0 h-auto font-normal underline ml-1" asChild>
+                <a href="/bankrolls">Create a bankroll</a>
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Extracted Data Preview */}
-        {extractedData && (
+        {extractedData && selectedBankrollId && (
           <div className="border border-border rounded-lg p-4" data-testid="extracted-data">
             <h4 className="font-medium text-foreground mb-3">Extracted Bet Data</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -191,6 +351,28 @@ export default function CaptureInterface() {
                   onChange={(e) => handleDataChange('stake', e.target.value.replace('$', ''))}
                   data-testid="input-stake"
                 />
+                {selectedBankroll && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    ≈ {stakeUnits || '0'} units
+                  </p>
+                )}
+              </div>
+              <div>
+                <Label htmlFor="units" className="text-sm font-medium text-muted-foreground">Stake (Units)</Label>
+                <Input
+                  id="units"
+                  type="number"
+                  step="0.01"
+                  value={stakeUnits}
+                  onChange={(e) => handleUnitsChange(e.target.value)}
+                  placeholder="1.0"
+                  data-testid="input-units"
+                />
+                {selectedBankroll && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    = {formatCurrency(parseFloat(stakeUnits || '0') * parseFloat(selectedBankroll.unitValue), selectedBankroll.currency)}
+                  </p>
+                )}
               </div>
               <div>
                 <Label htmlFor="payout" className="text-sm font-medium text-muted-foreground">Potential Payout</Label>
@@ -214,7 +396,7 @@ export default function CaptureInterface() {
                 <Button 
                   className="bg-accent hover:bg-accent/90 text-accent-foreground"
                   onClick={handleSaveBet}
-                  disabled={saveBetMutation.isPending}
+                  disabled={saveBetMutation.isPending || !selectedBankrollId}
                   data-testid="button-save"
                 >
                   {saveBetMutation.isPending ? (
@@ -222,7 +404,7 @@ export default function CaptureInterface() {
                   ) : (
                     <Table className="w-4 h-4 mr-2" />
                   )}
-                  Save to Sheets
+                  Save to Bankroll
                 </Button>
               </div>
             </div>

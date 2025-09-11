@@ -12,8 +12,17 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { ArrowRight, Edit, Copy, Trash2, ChevronDown, ChevronRight, History, MoreHorizontal, CheckSquare, Square } from "lucide-react";
+import { ArrowRight, Edit, Copy, Trash2, ChevronDown, ChevronRight, History, MoreHorizontal, CheckSquare, Square, Wallet } from "lucide-react";
 import type { Bet, BetHistory } from "@shared/schema";
+
+interface Bankroll {
+  id: string;
+  name: string;
+  currency: string;
+  unitMode: string;
+  unitValue: string;
+  isActive: number;
+}
 
 interface BulkAction {
   action: string;
@@ -34,6 +43,25 @@ export default function RecentBetsTable() {
   const { data: bets, isLoading, error } = useQuery<Bet[]>({
     queryKey: ['/api/bets'],
   });
+
+  // Fetch user's bankrolls for editing
+  const { data: bankrolls = [] } = useQuery<Bankroll[]>({
+    queryKey: ['/api/bankrolls'],
+  });
+
+  // Helper function to get bankroll info
+  const getBankrollInfo = (bankrollId: string) => {
+    return bankrolls.find(b => b.id === bankrollId);
+  };
+
+  // Helper function to format currency
+  const formatCurrency = (amount: number | string, currency: string = "USD") => {
+    const numAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency,
+    }).format(numAmount);
+  };
 
   // Update bet mutation
   const updateBetMutation = useMutation({
@@ -401,6 +429,7 @@ export default function RecentBetsTable() {
                     <th className="text-left py-3 px-6 text-sm font-medium text-muted-foreground">Type</th>
                     <th className="text-left py-3 px-6 text-sm font-medium text-muted-foreground">Odds</th>
                     <th className="text-left py-3 px-6 text-sm font-medium text-muted-foreground">Stake</th>
+                    <th className="text-left py-3 px-6 text-sm font-medium text-muted-foreground">Bankroll</th>
                     <th className="text-left py-3 px-6 text-sm font-medium text-muted-foreground">Status</th>
                     <th className="text-left py-3 px-6 text-sm font-medium text-muted-foreground">P&L</th>
                     <th className="text-left py-3 px-6 text-sm font-medium text-muted-foreground">Actions</th>

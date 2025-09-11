@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type RegisterData, type PublicUser, type Bet, type InsertBet, type UpdateBet, type BetHistory, type InsertBetHistory, type Screenshot, type InsertScreenshot } from "@shared/schema";
+import { type User, type InsertUser, type RegisterData, type PublicUser, type Bet, type InsertBet, type UpdateBet, type BetHistory, type InsertBetHistory, type Screenshot, type InsertScreenshot, type Bankroll, type InsertBankroll, type UpdateBankroll, type BankrollTransaction, type InsertBankrollTransaction, type BankrollGoal, type InsertBankrollGoal, type UpdateBankrollGoal } from "@shared/schema";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 
@@ -57,6 +57,66 @@ export interface IStorage {
   createScreenshot(screenshot: InsertScreenshot): Promise<Screenshot>;
   updateScreenshot(id: string, screenshot: Partial<Screenshot>): Promise<Screenshot | undefined>;
   getUnprocessedScreenshots(): Promise<Screenshot[]>;
+
+  // Bankroll methods
+  getBankroll(id: string): Promise<Bankroll | undefined>;
+  getBankrollsByUser(userId: string): Promise<Bankroll[]>;
+  getActiveBankroll(userId: string): Promise<Bankroll | undefined>;
+  createBankroll(bankroll: InsertBankroll): Promise<Bankroll>;
+  updateBankroll(id: string, bankroll: UpdateBankroll, userId: string): Promise<Bankroll | undefined>;
+  deleteBankroll(id: string, userId: string): Promise<boolean>;
+  activateBankroll(id: string, userId: string): Promise<Bankroll | undefined>;
+  deactivateBankroll(id: string, userId: string): Promise<Bankroll | undefined>;
+  getBankrollBalance(bankrollId: string): Promise<number>;
+  
+  // Bankroll Transaction methods
+  getBankrollTransaction(id: string): Promise<BankrollTransaction | undefined>;
+  getBankrollTransactions(bankrollId: string): Promise<BankrollTransaction[]>;
+  createBankrollTransaction(transaction: InsertBankrollTransaction): Promise<BankrollTransaction>;
+  getBankrollTransactionsByType(bankrollId: string, type: string): Promise<BankrollTransaction[]>;
+  
+  // Bankroll Goal methods
+  getBankrollGoals(bankrollId: string): Promise<BankrollGoal[]>;
+  createBankrollGoal(goal: InsertBankrollGoal): Promise<BankrollGoal>;
+  updateBankrollGoal(id: string, goal: UpdateBankrollGoal, userId: string): Promise<BankrollGoal | undefined>;
+  deleteBankrollGoal(id: string, userId: string): Promise<boolean>;
+  
+  // Bankroll Analytics methods
+  getBankrollAnalytics(bankrollId: string, dateFrom?: Date, dateTo?: Date): Promise<{
+    currentBalance: number;
+    totalDeposits: number;
+    totalWithdrawals: number;
+    totalProfit: number;
+    balanceHistory: Array<{ date: string; balance: number; }>;
+    drawdownAnalysis: {
+      maxDrawdown: number;
+      maxDrawdownPercent: number;
+      currentDrawdown: number;
+      currentDrawdownPercent: number;
+      recoverySinceMax: number;
+    };
+    unitPnL: {
+      totalUnitsWagered: number;
+      unitsWon: number;
+      unitsLost: number;
+      avgUnitSize: number;
+      unitProfitLoss: number;
+    };
+    riskMetrics: {
+      riskOfRuin: number;
+      sharpeRatio: number;
+      maxConcurrentRisk: number;
+      winStreakStdDev: number;
+    };
+    recentActivity: Array<{ date: string; type: string; amount: number; description: string; }>;
+  }>;
+  
+  // Helper methods for risk management
+  checkDailyLossLimit(bankrollId: string): Promise<{ exceeded: boolean; current: number; limit: number; }>;
+  checkWeeklyLossLimit(bankrollId: string): Promise<{ exceeded: boolean; current: number; limit: number; }>;
+  calculateKellyBetSize(bankrollId: string, winProbability: number, odds: string): Promise<{ units: number; amount: number; kelly: number; }>;
+  getMaxBetSize(bankrollId: string): Promise<{ maxAmount: number; maxUnits: number; }>;
+  validateBetSize(bankrollId: string, stakeAmount: number): Promise<{ valid: boolean; reasons: string[]; }>;
 }
 
 export class MemStorage implements IStorage {
@@ -64,12 +124,18 @@ export class MemStorage implements IStorage {
   private bets: Map<string, Bet>;
   private betHistories: Map<string, BetHistory>;
   private screenshots: Map<string, Screenshot>;
+  private bankrolls: Map<string, Bankroll>;
+  private bankrollTransactions: Map<string, BankrollTransaction>;
+  private bankrollGoals: Map<string, BankrollGoal>;
 
   constructor() {
     this.users = new Map();
     this.bets = new Map();
     this.betHistories = new Map();
     this.screenshots = new Map();
+    this.bankrolls = new Map();
+    this.bankrollTransactions = new Map();
+    this.bankrollGoals = new Map();
     
     // Create a demo user with hashed password for testing
     this.initializeDemoUser();
@@ -713,6 +779,704 @@ export class MemStorage implements IStorage {
     };
     this.betHistories.set(id, history);
     return history;
+  }
+
+  // ============ BANKROLL MANAGEMENT METHODS ============
+
+  // Bankroll CRUD methods
+  async getBankroll(id: string): Promise<Bankroll | undefined> {
+    return this.bankrolls.get(id);
+  }
+
+  async getBankrollsByUser(userId: string): Promise<Bankroll[]> {
+    return Array.from(this.bankrolls.values())
+      .filter(bankroll => bankroll.userId === userId)
+      .sort((a, b) => {
+        // Active bankrolls first, then by creation date (newest first)
+        if (a.isActive !== b.isActive) {
+          return (b.isActive || 0) - (a.isActive || 0);
+        }
+        const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bDate - aDate;
+      });
+  }
+
+  async getActiveBankroll(userId: string): Promise<Bankroll | undefined> {
+    return Array.from(this.bankrolls.values())
+      .find(bankroll => bankroll.userId === userId && bankroll.isActive === 1);
+  }
+
+  async createBankroll(insertBankroll: InsertBankroll): Promise<Bankroll> {
+    const id = randomUUID();
+    const bankroll: Bankroll = {
+      ...insertBankroll,
+      id,
+      createdAt: new Date(),
+    };
+    
+    // If this is the first bankroll for the user, make it active
+    const userBankrolls = await this.getBankrollsByUser(bankroll.userId);
+    if (userBankrolls.length === 0) {
+      bankroll.isActive = 1;
+    }
+    
+    this.bankrolls.set(id, bankroll);
+    
+    // Create initial deposit transaction
+    await this.createBankrollTransaction({
+      bankrollId: id,
+      userId: bankroll.userId,
+      type: "deposit",
+      amount: bankroll.startingBalance,
+      reason: "Initial bankroll funding",
+    });
+    
+    return bankroll;
+  }
+
+  async updateBankroll(id: string, updates: UpdateBankroll, userId: string): Promise<Bankroll | undefined> {
+    const bankroll = this.bankrolls.get(id);
+    if (!bankroll || bankroll.userId !== userId) return undefined;
+    
+    const updatedBankroll = { ...bankroll, ...updates };
+    this.bankrolls.set(id, updatedBankroll);
+    return updatedBankroll;
+  }
+
+  async deleteBankroll(id: string, userId: string): Promise<boolean> {
+    const bankroll = this.bankrolls.get(id);
+    if (!bankroll || bankroll.userId !== userId) return false;
+    
+    // Check if there are any bets associated with this bankroll
+    const associatedBets = Array.from(this.bets.values()).filter(bet => bet.bankrollId === id);
+    if (associatedBets.length > 0) {
+      throw new Error("Cannot delete bankroll with associated bets");
+    }
+    
+    // Delete all associated data
+    this.bankrolls.delete(id);
+    
+    // Delete transactions
+    Array.from(this.bankrollTransactions.values())
+      .filter(transaction => transaction.bankrollId === id)
+      .forEach(transaction => this.bankrollTransactions.delete(transaction.id));
+    
+    // Delete goals
+    Array.from(this.bankrollGoals.values())
+      .filter(goal => goal.bankrollId === id)
+      .forEach(goal => this.bankrollGoals.delete(goal.id));
+    
+    return true;
+  }
+
+  async activateBankroll(id: string, userId: string): Promise<Bankroll | undefined> {
+    const bankroll = this.bankrolls.get(id);
+    if (!bankroll || bankroll.userId !== userId) return undefined;
+    
+    // Deactivate all other bankrolls for this user
+    const userBankrolls = await this.getBankrollsByUser(userId);
+    userBankrolls.forEach(br => {
+      if (br.id !== id) {
+        br.isActive = 0;
+        this.bankrolls.set(br.id, br);
+      }
+    });
+    
+    // Activate this bankroll
+    bankroll.isActive = 1;
+    this.bankrolls.set(id, bankroll);
+    return bankroll;
+  }
+
+  async deactivateBankroll(id: string, userId: string): Promise<Bankroll | undefined> {
+    const bankroll = this.bankrolls.get(id);
+    if (!bankroll || bankroll.userId !== userId) return undefined;
+    
+    bankroll.isActive = 0;
+    this.bankrolls.set(id, bankroll);
+    return bankroll;
+  }
+
+  async getBankrollBalance(bankrollId: string): Promise<number> {
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll) return 0;
+    
+    const transactions = await this.getBankrollTransactions(bankrollId);
+    const totalTransactions = transactions.reduce((sum, transaction) => {
+      const amount = parseFloat(transaction.amount);
+      switch (transaction.type) {
+        case "deposit":
+        case "adjustment":
+        case "profit":
+        case "transfer_in":
+          return sum + amount;
+        case "withdrawal":
+        case "loss":
+        case "transfer_out":
+          return sum - amount;
+        default:
+          return sum;
+      }
+    }, 0);
+    
+    return Math.round((parseFloat(bankroll.startingBalance) + totalTransactions) * 100) / 100;
+  }
+
+  // Bankroll Transaction methods
+  async getBankrollTransaction(id: string): Promise<BankrollTransaction | undefined> {
+    return this.bankrollTransactions.get(id);
+  }
+
+  async getBankrollTransactions(bankrollId: string): Promise<BankrollTransaction[]> {
+    return Array.from(this.bankrollTransactions.values())
+      .filter(transaction => transaction.bankrollId === bankrollId)
+      .sort((a, b) => {
+        const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bDate - aDate;
+      });
+  }
+
+  async createBankrollTransaction(insertTransaction: InsertBankrollTransaction): Promise<BankrollTransaction> {
+    const id = randomUUID();
+    const transaction: BankrollTransaction = {
+      ...insertTransaction,
+      id,
+      createdAt: new Date(),
+    };
+    this.bankrollTransactions.set(id, transaction);
+    return transaction;
+  }
+
+  async getBankrollTransactionsByType(bankrollId: string, type: string): Promise<BankrollTransaction[]> {
+    return Array.from(this.bankrollTransactions.values())
+      .filter(transaction => transaction.bankrollId === bankrollId && transaction.type === type);
+  }
+
+  // Bankroll Goal methods
+  async getBankrollGoals(bankrollId: string): Promise<BankrollGoal[]> {
+    return Array.from(this.bankrollGoals.values())
+      .filter(goal => goal.bankrollId === bankrollId)
+      .sort((a, b) => {
+        const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bDate - aDate;
+      });
+  }
+
+  async createBankrollGoal(insertGoal: InsertBankrollGoal): Promise<BankrollGoal> {
+    const id = randomUUID();
+    const goal: BankrollGoal = {
+      ...insertGoal,
+      id,
+      createdAt: new Date(),
+    };
+    this.bankrollGoals.set(id, goal);
+    return goal;
+  }
+
+  async updateBankrollGoal(id: string, updates: UpdateBankrollGoal, userId: string): Promise<BankrollGoal | undefined> {
+    const goal = this.bankrollGoals.get(id);
+    if (!goal) return undefined;
+    
+    // Verify user owns the bankroll
+    const bankroll = this.bankrolls.get(goal.bankrollId);
+    if (!bankroll || bankroll.userId !== userId) return undefined;
+    
+    const updatedGoal = { ...goal, ...updates };
+    this.bankrollGoals.set(id, updatedGoal);
+    return updatedGoal;
+  }
+
+  async deleteBankrollGoal(id: string, userId: string): Promise<boolean> {
+    const goal = this.bankrollGoals.get(id);
+    if (!goal) return false;
+    
+    // Verify user owns the bankroll
+    const bankroll = this.bankrolls.get(goal.bankrollId);
+    if (!bankroll || bankroll.userId !== userId) return false;
+    
+    this.bankrollGoals.delete(id);
+    return true;
+  }
+
+  // Advanced Bankroll Analytics
+  async getBankrollAnalytics(bankrollId: string, dateFrom?: Date, dateTo?: Date): Promise<{
+    currentBalance: number;
+    totalDeposits: number;
+    totalWithdrawals: number;
+    totalProfit: number;
+    balanceHistory: Array<{ date: string; balance: number; }>;
+    drawdownAnalysis: {
+      maxDrawdown: number;
+      maxDrawdownPercent: number;
+      currentDrawdown: number;
+      currentDrawdownPercent: number;
+      recoverySinceMax: number;
+    };
+    unitPnL: {
+      totalUnitsWagered: number;
+      unitsWon: number;
+      unitsLost: number;
+      avgUnitSize: number;
+      unitProfitLoss: number;
+    };
+    riskMetrics: {
+      riskOfRuin: number;
+      sharpeRatio: number;
+      maxConcurrentRisk: number;
+      winStreakStdDev: number;
+    };
+    recentActivity: Array<{ date: string; type: string; amount: number; description: string; }>;
+  }> {
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll) throw new Error("Bankroll not found");
+    
+    let transactions = await this.getBankrollTransactions(bankrollId);
+    let bets = Array.from(this.bets.values()).filter(bet => bet.bankrollId === bankrollId);
+    
+    // Apply date filtering
+    if (dateFrom || dateTo) {
+      transactions = transactions.filter(transaction => {
+        if (!transaction.createdAt) return false;
+        const transactionDate = new Date(transaction.createdAt);
+        if (dateFrom && transactionDate < dateFrom) return false;
+        if (dateTo && transactionDate > dateTo) return false;
+        return true;
+      });
+      
+      bets = bets.filter(bet => {
+        if (!bet.createdAt) return false;
+        const betDate = new Date(bet.createdAt);
+        if (dateFrom && betDate < dateFrom) return false;
+        if (dateTo && betDate > dateTo) return false;
+        return true;
+      });
+    }
+    
+    const currentBalance = await this.getBankrollBalance(bankrollId);
+    
+    // Calculate transaction totals
+    const deposits = transactions.filter(t => ["deposit", "transfer_in"].includes(t.type))
+      .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+    const withdrawals = transactions.filter(t => ["withdrawal", "transfer_out"].includes(t.type))
+      .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+    const totalProfit = transactions.filter(t => t.type === "profit")
+      .reduce((sum, t) => sum + parseFloat(t.amount), 0) - 
+      transactions.filter(t => t.type === "loss")
+      .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+    
+    // Generate balance history
+    const balanceHistory = this.generateBalanceHistory(bankrollId, transactions);
+    
+    // Calculate drawdown analysis
+    const drawdownAnalysis = this.calculateDrawdownAnalysis(balanceHistory, parseFloat(bankroll.startingBalance));
+    
+    // Calculate unit P&L analysis
+    const unitPnL = this.calculateUnitPnL(bets, bankroll);
+    
+    // Calculate risk metrics
+    const riskMetrics = this.calculateRiskMetrics(bets, balanceHistory, bankroll);
+    
+    // Generate recent activity
+    const recentActivity = this.generateRecentActivity(transactions, bets).slice(0, 10);
+    
+    return {
+      currentBalance,
+      totalDeposits: deposits,
+      totalWithdrawals: withdrawals,
+      totalProfit,
+      balanceHistory,
+      drawdownAnalysis,
+      unitPnL,
+      riskMetrics,
+      recentActivity,
+    };
+  }
+
+  // Risk Management Helper Methods
+  async checkDailyLossLimit(bankrollId: string): Promise<{ exceeded: boolean; current: number; limit: number; }> {
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll || !bankroll.dailyLossLimitPct) {
+      return { exceeded: false, current: 0, limit: 0 };
+    }
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const todaysLosses = Array.from(this.bankrollTransactions.values())
+      .filter(transaction => 
+        transaction.bankrollId === bankrollId &&
+        transaction.type === "loss" &&
+        transaction.createdAt &&
+        new Date(transaction.createdAt) >= today
+      )
+      .reduce((sum, transaction) => sum + parseFloat(transaction.amount), 0);
+    
+    const currentBalance = await this.getBankrollBalance(bankrollId);
+    const limit = currentBalance * parseFloat(bankroll.dailyLossLimitPct);
+    
+    return {
+      exceeded: todaysLosses >= limit,
+      current: todaysLosses,
+      limit,
+    };
+  }
+
+  async checkWeeklyLossLimit(bankrollId: string): Promise<{ exceeded: boolean; current: number; limit: number; }> {
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll || !bankroll.weeklyLossLimitPct) {
+      return { exceeded: false, current: 0, limit: 0 };
+    }
+    
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    weekAgo.setHours(0, 0, 0, 0);
+    
+    const weeklyLosses = Array.from(this.bankrollTransactions.values())
+      .filter(transaction => 
+        transaction.bankrollId === bankrollId &&
+        transaction.type === "loss" &&
+        transaction.createdAt &&
+        new Date(transaction.createdAt) >= weekAgo
+      )
+      .reduce((sum, transaction) => sum + parseFloat(transaction.amount), 0);
+    
+    const currentBalance = await this.getBankrollBalance(bankrollId);
+    const limit = currentBalance * parseFloat(bankroll.weeklyLossLimitPct);
+    
+    return {
+      exceeded: weeklyLosses >= limit,
+      current: weeklyLosses,
+      limit,
+    };
+  }
+
+  async calculateKellyBetSize(bankrollId: string, winProbability: number, odds: string): Promise<{ units: number; amount: number; kelly: number; }> {
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll) throw new Error("Bankroll not found");
+    
+    const currentBalance = await this.getBankrollBalance(bankrollId);
+    const unitValue = parseFloat(bankroll.unitValue);
+    
+    // Parse odds to decimal
+    let decimalOdds: number;
+    if (odds.startsWith('+')) {
+      decimalOdds = (parseInt(odds.substring(1)) / 100) + 1;
+    } else if (odds.startsWith('-')) {
+      decimalOdds = (100 / parseInt(odds.substring(1))) + 1;
+    } else {
+      decimalOdds = parseFloat(odds);
+    }
+    
+    // Kelly Formula: f = (bp - q) / b
+    // where b = odds-1, p = win probability, q = lose probability
+    const b = decimalOdds - 1;
+    const p = winProbability / 100;
+    const q = 1 - p;
+    
+    const kellyFraction = (b * p - q) / b;
+    const adjustedKelly = kellyFraction * parseFloat(bankroll.kellyFraction); // Apply conservative factor
+    
+    // Calculate suggested bet size
+    let units: number;
+    let amount: number;
+    
+    if (bankroll.unitMode === "percent") {
+      // Percentage-based units
+      amount = currentBalance * adjustedKelly;
+      units = amount / (currentBalance * unitValue);
+    } else {
+      // Fixed units
+      units = adjustedKelly * currentBalance / unitValue;
+      amount = units * unitValue;
+    }
+    
+    // Ensure non-negative
+    units = Math.max(0, units);
+    amount = Math.max(0, amount);
+    
+    return {
+      units: Math.round(units * 100) / 100,
+      amount: Math.round(amount * 100) / 100,
+      kelly: Math.round(kellyFraction * 10000) / 100, // As percentage
+    };
+  }
+
+  async getMaxBetSize(bankrollId: string): Promise<{ maxAmount: number; maxUnits: number; }> {
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll) throw new Error("Bankroll not found");
+    
+    const currentBalance = await this.getBankrollBalance(bankrollId);
+    const maxAmount = currentBalance * parseFloat(bankroll.maxBetPct || "0.05");
+    
+    let maxUnits: number;
+    if (bankroll.unitMode === "percent") {
+      maxUnits = maxAmount / (currentBalance * parseFloat(bankroll.unitValue));
+    } else {
+      maxUnits = maxAmount / parseFloat(bankroll.unitValue);
+    }
+    
+    return {
+      maxAmount: Math.round(maxAmount * 100) / 100,
+      maxUnits: Math.round(maxUnits * 100) / 100,
+    };
+  }
+
+  async validateBetSize(bankrollId: string, stakeAmount: number): Promise<{ valid: boolean; reasons: string[]; }> {
+    const reasons: string[] = [];
+    
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll) {
+      reasons.push("Bankroll not found");
+      return { valid: false, reasons };
+    }
+    
+    const currentBalance = await this.getBankrollBalance(bankrollId);
+    
+    // Check if stake exceeds balance
+    if (stakeAmount > currentBalance) {
+      reasons.push("Stake amount exceeds current bankroll balance");
+    }
+    
+    // Check max bet percentage
+    const maxBetAmount = currentBalance * parseFloat(bankroll.maxBetPct || "0.05");
+    if (stakeAmount > maxBetAmount) {
+      reasons.push(`Stake exceeds maximum bet size of ${Math.round(maxBetAmount * 100) / 100} (${parseFloat(bankroll.maxBetPct || "0.05") * 100}% of bankroll)`);
+    }
+    
+    // Check daily loss limits
+    const dailyCheck = await this.checkDailyLossLimit(bankrollId);
+    if (dailyCheck.exceeded) {
+      reasons.push("Daily loss limit already exceeded");
+    } else if (dailyCheck.current + stakeAmount > dailyCheck.limit) {
+      reasons.push("This bet would exceed daily loss limit");
+    }
+    
+    // Check weekly loss limits
+    const weeklyCheck = await this.checkWeeklyLossLimit(bankrollId);
+    if (weeklyCheck.exceeded) {
+      reasons.push("Weekly loss limit already exceeded");
+    } else if (weeklyCheck.current + stakeAmount > weeklyCheck.limit) {
+      reasons.push("This bet would exceed weekly loss limit");
+    }
+    
+    return {
+      valid: reasons.length === 0,
+      reasons,
+    };
+  }
+
+  // Private helper methods for complex calculations
+  private generateBalanceHistory(bankrollId: string, transactions: BankrollTransaction[]): Array<{ date: string; balance: number; }> {
+    const bankroll = this.bankrolls.get(bankrollId);
+    if (!bankroll) return [];
+    
+    let runningBalance = parseFloat(bankroll.startingBalance);
+    const history: Array<{ date: string; balance: number; }> = [];
+    
+    // Sort transactions by date
+    const sortedTransactions = [...transactions].sort((a, b) => {
+      const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return aDate - bDate;
+    });
+    
+    // Add starting point
+    if (bankroll.createdAt) {
+      history.push({
+        date: new Date(bankroll.createdAt).toISOString().split('T')[0],
+        balance: runningBalance,
+      });
+    }
+    
+    // Process each transaction
+    sortedTransactions.forEach(transaction => {
+      const amount = parseFloat(transaction.amount);
+      switch (transaction.type) {
+        case "deposit":
+        case "adjustment":
+        case "profit":
+        case "transfer_in":
+          runningBalance += amount;
+          break;
+        case "withdrawal":
+        case "loss":
+        case "transfer_out":
+          runningBalance -= amount;
+          break;
+      }
+      
+      if (transaction.createdAt) {
+        history.push({
+          date: new Date(transaction.createdAt).toISOString().split('T')[0],
+          balance: Math.round(runningBalance * 100) / 100,
+        });
+      }
+    });
+    
+    return history;
+  }
+
+  private calculateDrawdownAnalysis(balanceHistory: Array<{ date: string; balance: number; }>, startingBalance: number): {
+    maxDrawdown: number;
+    maxDrawdownPercent: number;
+    currentDrawdown: number;
+    currentDrawdownPercent: number;
+    recoverySinceMax: number;
+  } {
+    if (balanceHistory.length === 0) {
+      return { maxDrawdown: 0, maxDrawdownPercent: 0, currentDrawdown: 0, currentDrawdownPercent: 0, recoverySinceMax: 0 };
+    }
+    
+    let maxBalance = startingBalance;
+    let maxDrawdown = 0;
+    let maxDrawdownPercent = 0;
+    
+    balanceHistory.forEach(entry => {
+      if (entry.balance > maxBalance) {
+        maxBalance = entry.balance;
+      }
+      
+      const drawdown = maxBalance - entry.balance;
+      const drawdownPercent = maxBalance > 0 ? (drawdown / maxBalance) * 100 : 0;
+      
+      if (drawdown > maxDrawdown) {
+        maxDrawdown = drawdown;
+        maxDrawdownPercent = drawdownPercent;
+      }
+    });
+    
+    const currentBalance = balanceHistory[balanceHistory.length - 1]?.balance || startingBalance;
+    const currentDrawdown = Math.max(0, maxBalance - currentBalance);
+    const currentDrawdownPercent = maxBalance > 0 ? (currentDrawdown / maxBalance) * 100 : 0;
+    const recoverySinceMax = currentBalance - (maxBalance - maxDrawdown);
+    
+    return {
+      maxDrawdown: Math.round(maxDrawdown * 100) / 100,
+      maxDrawdownPercent: Math.round(maxDrawdownPercent * 100) / 100,
+      currentDrawdown: Math.round(currentDrawdown * 100) / 100,
+      currentDrawdownPercent: Math.round(currentDrawdownPercent * 100) / 100,
+      recoverySinceMax: Math.round(recoverySinceMax * 100) / 100,
+    };
+  }
+
+  private calculateUnitPnL(bets: Bet[], bankroll: Bankroll): {
+    totalUnitsWagered: number;
+    unitsWon: number;
+    unitsLost: number;
+    avgUnitSize: number;
+    unitProfitLoss: number;
+  } {
+    const settledBets = bets.filter(bet => bet.status !== "pending");
+    
+    const totalUnitsWagered = settledBets.reduce((sum, bet) => sum + parseFloat(bet.stakeUnits), 0);
+    const unitsWon = settledBets.filter(bet => bet.status === "won").reduce((sum, bet) => sum + parseFloat(bet.stakeUnits), 0);
+    const unitsLost = settledBets.filter(bet => bet.status === "lost").reduce((sum, bet) => sum + parseFloat(bet.stakeUnits), 0);
+    
+    const totalStake = settledBets.reduce((sum, bet) => sum + parseFloat(bet.stake), 0);
+    const avgUnitSize = settledBets.length > 0 ? totalStake / totalUnitsWagered : 0;
+    
+    const unitProfitLoss = settledBets.reduce((sum, bet) => {
+      const profit = this.calculateBetProfit(bet);
+      return sum + (profit / parseFloat(bet.stakeUnits));
+    }, 0);
+    
+    return {
+      totalUnitsWagered: Math.round(totalUnitsWagered * 100) / 100,
+      unitsWon: Math.round(unitsWon * 100) / 100,
+      unitsLost: Math.round(unitsLost * 100) / 100,
+      avgUnitSize: Math.round(avgUnitSize * 100) / 100,
+      unitProfitLoss: Math.round(unitProfitLoss * 100) / 100,
+    };
+  }
+
+  private calculateRiskMetrics(bets: Bet[], balanceHistory: Array<{ date: string; balance: number; }>, bankroll: Bankroll): {
+    riskOfRuin: number;
+    sharpeRatio: number;
+    maxConcurrentRisk: number;
+    winStreakStdDev: number;
+  } {
+    const settledBets = bets.filter(bet => bet.status !== "pending");
+    
+    // Risk of Ruin estimation (simplified)
+    const winRate = settledBets.length > 0 ? settledBets.filter(bet => bet.status === "won").length / settledBets.length : 0;
+    const avgUnitSize = settledBets.length > 0 ? settledBets.reduce((sum, bet) => sum + parseFloat(bet.stakeUnits), 0) / settledBets.length : 0;
+    const riskOfRuin = winRate > 0.5 ? Math.pow((1 - winRate) / winRate, avgUnitSize) * 100 : 50;
+    
+    // Sharpe Ratio calculation
+    const returns = balanceHistory.slice(1).map((entry, index) => {
+      const prevBalance = balanceHistory[index].balance;
+      return prevBalance > 0 ? (entry.balance - prevBalance) / prevBalance : 0;
+    });
+    
+    const avgReturn = returns.length > 0 ? returns.reduce((sum, r) => sum + r, 0) / returns.length : 0;
+    const returnStdDev = returns.length > 1 ? Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (returns.length - 1)) : 0;
+    const sharpeRatio = returnStdDev > 0 ? avgReturn / returnStdDev : 0;
+    
+    // Max concurrent risk (highest % of bankroll at risk at one time)
+    const maxConcurrentRisk = settledBets.reduce((max, bet) => {
+      const riskPercent = parseFloat(bet.stakeUnits) * parseFloat(bankroll.unitValue);
+      return Math.max(max, riskPercent);
+    }, 0);
+    
+    // Win streak standard deviation
+    const streaks: number[] = [];
+    let currentStreak = 0;
+    settledBets.forEach(bet => {
+      if (bet.status === "won") {
+        currentStreak++;
+      } else {
+        if (currentStreak > 0) {
+          streaks.push(currentStreak);
+          currentStreak = 0;
+        }
+      }
+    });
+    if (currentStreak > 0) streaks.push(currentStreak);
+    
+    const avgStreak = streaks.length > 0 ? streaks.reduce((sum, s) => sum + s, 0) / streaks.length : 0;
+    const winStreakStdDev = streaks.length > 1 ? Math.sqrt(streaks.reduce((sum, s) => sum + Math.pow(s - avgStreak, 2), 0) / (streaks.length - 1)) : 0;
+    
+    return {
+      riskOfRuin: Math.round(Math.min(100, Math.max(0, riskOfRuin)) * 100) / 100,
+      sharpeRatio: Math.round(sharpeRatio * 10000) / 10000,
+      maxConcurrentRisk: Math.round(maxConcurrentRisk * 10000) / 100,
+      winStreakStdDev: Math.round(winStreakStdDev * 100) / 100,
+    };
+  }
+
+  private generateRecentActivity(transactions: BankrollTransaction[], bets: Bet[]): Array<{ date: string; type: string; amount: number; description: string; }> {
+    const activities: Array<{ date: string; type: string; amount: number; description: string; }> = [];
+    
+    // Add transaction activities
+    transactions.slice(0, 20).forEach(transaction => {
+      if (transaction.createdAt) {
+        activities.push({
+          date: new Date(transaction.createdAt).toISOString(),
+          type: transaction.type,
+          amount: parseFloat(transaction.amount),
+          description: transaction.reason || `${transaction.type.replace('_', ' ')} transaction`,
+        });
+      }
+    });
+    
+    // Add bet activities
+    bets.filter(bet => bet.status !== "pending").slice(0, 20).forEach(bet => {
+      if (bet.settledAt) {
+        const profit = this.calculateBetProfit(bet);
+        activities.push({
+          date: new Date(bet.settledAt).toISOString(),
+          type: bet.status === "won" ? "profit" : "loss",
+          amount: Math.abs(profit),
+          description: `${bet.status} bet: ${bet.event} (${bet.betType})`,
+        });
+      }
+    });
+    
+    // Sort by date (newest first)
+    return activities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }
 }
 

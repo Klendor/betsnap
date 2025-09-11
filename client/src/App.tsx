@@ -6,6 +6,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import Dashboard from "@/pages/dashboard";
 import Analytics from "@/pages/analytics";
+import Bankrolls from "@/pages/bankrolls";
+import BankrollDashboard from "@/pages/bankroll-dashboard";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
 import NotFound from "@/pages/not-found";
@@ -86,6 +88,12 @@ function Router() {
       </Route>
       <Route path="/analytics">
         <ProtectedRoute component={Analytics} />
+      </Route>
+      <Route path="/bankrolls">
+        <ProtectedRoute component={Bankrolls} />
+      </Route>
+      <Route path="/bankrolls/:id">
+        <ProtectedRoute component={BankrollDashboard} />
       </Route>
       <Route component={NotFound} />
     </Switch>

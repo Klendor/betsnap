@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/contexts/AuthContext";
 import { Link } from "wouter";
-import { Camera, Crown, User, LogOut, Settings, BarChart3 } from "lucide-react";
+import { Camera, Crown, User, LogOut, Settings, BarChart3, Wallet } from "lucide-react";
 
 export default function Navigation() {
   const { user, isAuthenticated, logout } = useAuth();
@@ -50,6 +50,13 @@ export default function Navigation() {
                 <a href="#" className="text-muted-foreground hover:text-foreground transition-colors" data-testid="nav-bets">
                   Bets
                 </a>
+                <Link 
+                  href="/bankrolls" 
+                  className="text-muted-foreground hover:text-foreground transition-colors" 
+                  data-testid="nav-bankrolls"
+                >
+                  Bankrolls
+                </Link>
                 <Link 
                   href="/analytics" 
                   className="text-muted-foreground hover:text-foreground transition-colors" 
@@ -96,6 +103,12 @@ export default function Navigation() {
                     <DropdownMenuItem data-testid="menu-settings">
                       <Settings className="mr-2 h-4 w-4" />
                       <span>Settings</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild data-testid="menu-bankrolls">
+                      <Link href="/bankrolls" className="flex items-center">
+                        <Wallet className="mr-2 h-4 w-4" />
+                        <span>Bankrolls</span>
+                      </Link>
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild data-testid="menu-analytics">
                       <Link href="/analytics" className="flex items-center">

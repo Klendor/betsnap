@@ -17,14 +17,53 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const bankrolls = pgTable("bankrolls", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  name: text("name").notNull(),
+  currency: text("currency").notNull().default("USD"),
+  startingBalance: decimal("starting_balance", { precision: 12, scale: 2 }).notNull(),
+  unitMode: text("unit_mode").notNull().default("fixed"), // 'fixed' | 'percent'
+  unitValue: decimal("unit_value", { precision: 12, scale: 4 }).notNull(), // Fixed amount or percentage (0.01 = 1%)
+  maxBetPct: decimal("max_bet_pct", { precision: 5, scale: 4 }).default("0.05"), // 5% default
+  dailyLossLimitPct: decimal("daily_loss_limit_pct", { precision: 5, scale: 4 }),
+  weeklyLossLimitPct: decimal("weekly_loss_limit_pct", { precision: 5, scale: 4 }),
+  kellyFraction: decimal("kelly_fraction", { precision: 5, scale: 4 }).default("0.25"), // 25% Kelly default
+  isActive: integer("is_active").notNull().default(1), // 0 = inactive, 1 = active
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const bankrollTransactions = pgTable("bankroll_transactions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  bankrollId: varchar("bankroll_id").notNull().references(() => bankrolls.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  type: text("type").notNull(), // 'deposit' | 'withdrawal' | 'adjustment' | 'profit' | 'loss' | 'transfer_in' | 'transfer_out'
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  reason: text("reason"),
+  refBetId: varchar("ref_bet_id"), // Reference to bet if transaction is from bet settlement
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const bankrollGoals = pgTable("bankroll_goals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  bankrollId: varchar("bankroll_id").notNull().references(() => bankrolls.id, { onDelete: "cascade" }),
+  targetAmount: decimal("target_amount", { precision: 12, scale: 2 }),
+  targetProfit: decimal("target_profit", { precision: 12, scale: 2 }),
+  targetDate: timestamp("target_date"),
+  status: text("status").notNull().default("active"), // 'active' | 'met' | 'missed'
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const bets = pgTable("bets", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id),
+  bankrollId: varchar("bankroll_id").notNull().references(() => bankrolls.id),
   sport: text("sport").notNull(),
   event: text("event").notNull(), // teams or event description
   betType: text("bet_type").notNull(), // moneyline, spread, over/under, etc
   odds: text("odds").notNull(), // +155, -110, etc
   stake: decimal("stake", { precision: 10, scale: 2 }).notNull(),
+  stakeUnits: decimal("stake_units", { precision: 8, scale: 4 }).notNull(), // stake / unit value
   potentialPayout: decimal("potential_payout", { precision: 10, scale: 2 }).notNull(),
   status: text("status").notNull().default("pending"), // pending, won, lost
   actualPayout: decimal("actual_payout", { precision: 10, scale: 2 }),
@@ -80,10 +119,32 @@ export const insertUserWithPasswordSchema = createInsertSchema(users).omit({
   createdAt: true,
 });
 
+export const insertBankrollSchema = createInsertSchema(bankrolls).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const updateBankrollSchema = insertBankrollSchema.partial();
+
+export const insertBankrollTransactionSchema = createInsertSchema(bankrollTransactions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBankrollGoalSchema = createInsertSchema(bankrollGoals).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const updateBankrollGoalSchema = insertBankrollGoalSchema.partial().extend({
+  status: z.enum(["active", "met", "missed"]).optional(),
+});
+
 export const insertBetSchema = createInsertSchema(bets).omit({
   id: true,
   createdAt: true,
   settledAt: true,
+  stakeUnits: true, // This will be auto-calculated
 });
 
 export const updateBetSchema = insertBetSchema.partial().extend({
@@ -123,6 +184,14 @@ export type RegisterData = z.infer<typeof registerSchema>;
 export type LoginData = z.infer<typeof loginSchema>;
 export type InsertUserWithPassword = z.infer<typeof insertUserWithPasswordSchema>;
 export type PublicUser = Omit<User, 'password'>; // User without password for API responses
+export type Bankroll = typeof bankrolls.$inferSelect;
+export type InsertBankroll = z.infer<typeof insertBankrollSchema>;
+export type UpdateBankroll = z.infer<typeof updateBankrollSchema>;
+export type BankrollTransaction = typeof bankrollTransactions.$inferSelect;
+export type InsertBankrollTransaction = z.infer<typeof insertBankrollTransactionSchema>;
+export type BankrollGoal = typeof bankrollGoals.$inferSelect;
+export type InsertBankrollGoal = z.infer<typeof insertBankrollGoalSchema>;
+export type UpdateBankrollGoal = z.infer<typeof updateBankrollGoalSchema>;
 export type Bet = typeof bets.$inferSelect;
 export type InsertBet = z.infer<typeof insertBetSchema>;
 export type UpdateBet = z.infer<typeof updateBetSchema>;
