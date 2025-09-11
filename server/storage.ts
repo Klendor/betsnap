@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type RegisterData, type PublicUser, type Bet, type InsertBet, type UpdateBet, type BetHistory, type InsertBetHistory, type Screenshot, type InsertScreenshot, type Bankroll, type InsertBankroll, type UpdateBankroll, type BankrollTransaction, type InsertBankrollTransaction, type BankrollGoal, type InsertBankrollGoal, type UpdateBankrollGoal } from "@shared/schema";
+import { type User, type InsertUser, type RegisterData, type PublicUser, type Bet, type InsertBet, type UpdateBet, type BetHistory, type InsertBetHistory, type Screenshot, type InsertScreenshot, type Bankroll, type InsertBankroll, type UpdateBankroll, type BankrollTransaction, type InsertBankrollTransaction, type BankrollGoal, type InsertBankrollGoal, type UpdateBankrollGoal, type Subscription, type InsertSubscription, type UpdateSubscription, type BillingEvent, type InsertBillingEvent, type UsageTracking, type InsertUsageTracking, type UpdateUsageTracking } from "@shared/schema";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 
@@ -117,6 +117,39 @@ export interface IStorage {
   calculateKellyBetSize(bankrollId: string, winProbability: number, odds: string): Promise<{ units: number; amount: number; kelly: number; }>;
   getMaxBetSize(bankrollId: string): Promise<{ maxAmount: number; maxUnits: number; }>;
   validateBetSize(bankrollId: string, stakeAmount: number): Promise<{ valid: boolean; reasons: string[]; }>;
+
+  // Subscription methods
+  getSubscription(id: string): Promise<Subscription | undefined>;
+  getSubscriptionByStripeId(stripeSubscriptionId: string): Promise<Subscription | undefined>;
+  getSubscriptionByUser(userId: string): Promise<Subscription | undefined>;
+  createSubscription(subscription: InsertSubscription): Promise<Subscription>;
+  updateSubscription(id: string, subscription: UpdateSubscription): Promise<Subscription | undefined>;
+  deleteSubscription(id: string): Promise<boolean>;
+  
+  // Billing event methods
+  getBillingEvent(id: string): Promise<BillingEvent | undefined>;
+  getBillingEventByStripeId(stripeEventId: string): Promise<BillingEvent | undefined>;
+  getBillingEventsByUser(userId: string): Promise<BillingEvent[]>;
+  createBillingEvent(event: InsertBillingEvent): Promise<BillingEvent>;
+  markBillingEventProcessed(id: string, success: boolean, error?: string): Promise<BillingEvent | undefined>;
+  
+  // Usage tracking methods
+  getUsageTracking(userId: string, featureType: string, usageMonth: string): Promise<UsageTracking | undefined>;
+  getUserUsageTracking(userId: string): Promise<UsageTracking[]>;
+  incrementUsage(userId: string, featureType: string): Promise<UsageTracking>;
+  resetMonthlyUsage(userId: string, featureType: string, usageMonth: string): Promise<void>;
+  checkUsageLimit(userId: string, featureType: string): Promise<{ exceeded: boolean; current: number; limit: number; }>;
+  
+  // Subscription helper methods
+  updateUserSubscriptionStatus(userId: string, subscription: Partial<Subscription>): Promise<PublicUser | undefined>;
+  getUsersWithExpiredSubscriptions(): Promise<PublicUser[]>;
+  getUserSubscriptionSummary(userId: string): Promise<{
+    currentPlan: string;
+    status: string;
+    nextBillingDate?: Date;
+    cancelAtPeriodEnd: boolean;
+    usage: Record<string, { current: number; limit: number; }>;
+  }>;
 }
 
 export class MemStorage implements IStorage {
@@ -127,6 +160,9 @@ export class MemStorage implements IStorage {
   private bankrolls: Map<string, Bankroll>;
   private bankrollTransactions: Map<string, BankrollTransaction>;
   private bankrollGoals: Map<string, BankrollGoal>;
+  private subscriptions: Map<string, Subscription>;
+  private billingEvents: Map<string, BillingEvent>;
+  private usageTracking: Map<string, UsageTracking>;
 
   constructor() {
     this.users = new Map();
@@ -136,6 +172,9 @@ export class MemStorage implements IStorage {
     this.bankrolls = new Map();
     this.bankrollTransactions = new Map();
     this.bankrollGoals = new Map();
+    this.subscriptions = new Map();
+    this.billingEvents = new Map();
+    this.usageTracking = new Map();
     
     // Create a demo user with hashed password for testing
     this.initializeDemoUser();
@@ -149,12 +188,26 @@ export class MemStorage implements IStorage {
       name: "Demo User",
       password: hashedPassword,
       subscriptionPlan: "premium",
+      subscriptionStatus: "active",
+      subscriptionTier: "premium",
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      subscriptionStartDate: new Date(),
+      subscriptionEndDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+      trialStartDate: null,
+      trialEndDate: null,
+      subscriptionCancelAtPeriodEnd: 0,
+      monthlyBetLimit: -1, // Unlimited for premium
+      maxBankrolls: 10,
+      advancedAnalytics: 1,
+      kellyCalculator: 1,
       googleSheetsId: null,
       googleAccessToken: null,
       googleRefreshToken: null,
       googleTokenExpiry: null,
       googleSheetsConnected: 0,
       createdAt: new Date(),
+      updatedAt: new Date(),
     };
     this.users.set(demoUser.id, demoUser);
   }
@@ -1477,6 +1530,277 @@ export class MemStorage implements IStorage {
     
     // Sort by date (newest first)
     return activities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  // Subscription methods
+  async getSubscription(id: string): Promise<Subscription | undefined> {
+    return this.subscriptions.get(id);
+  }
+
+  async getSubscriptionByStripeId(stripeSubscriptionId: string): Promise<Subscription | undefined> {
+    return Array.from(this.subscriptions.values()).find(sub => sub.stripeSubscriptionId === stripeSubscriptionId);
+  }
+
+  async getSubscriptionByUser(userId: string): Promise<Subscription | undefined> {
+    return Array.from(this.subscriptions.values()).find(sub => sub.userId === userId);
+  }
+
+  async createSubscription(subscription: InsertSubscription): Promise<Subscription> {
+    const id = randomUUID();
+    const newSubscription: Subscription = {
+      ...subscription,
+      id,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.subscriptions.set(id, newSubscription);
+    return newSubscription;
+  }
+
+  async updateSubscription(id: string, subscription: UpdateSubscription): Promise<Subscription | undefined> {
+    const existingSubscription = this.subscriptions.get(id);
+    if (!existingSubscription) return undefined;
+    
+    const updatedSubscription = { 
+      ...existingSubscription, 
+      ...subscription, 
+      updatedAt: new Date() 
+    };
+    this.subscriptions.set(id, updatedSubscription);
+    return updatedSubscription;
+  }
+
+  async deleteSubscription(id: string): Promise<boolean> {
+    return this.subscriptions.delete(id);
+  }
+
+  // Billing event methods
+  async getBillingEvent(id: string): Promise<BillingEvent | undefined> {
+    return this.billingEvents.get(id);
+  }
+
+  async getBillingEventByStripeId(stripeEventId: string): Promise<BillingEvent | undefined> {
+    return Array.from(this.billingEvents.values()).find(event => event.stripeEventId === stripeEventId);
+  }
+
+  async getBillingEventsByUser(userId: string): Promise<BillingEvent[]> {
+    return Array.from(this.billingEvents.values()).filter(event => event.userId === userId);
+  }
+
+  async createBillingEvent(event: InsertBillingEvent): Promise<BillingEvent> {
+    const id = randomUUID();
+    const newEvent: BillingEvent = {
+      ...event,
+      id,
+      createdAt: new Date(),
+    };
+    this.billingEvents.set(id, newEvent);
+    return newEvent;
+  }
+
+  async markBillingEventProcessed(id: string, success: boolean, error?: string): Promise<BillingEvent | undefined> {
+    const event = this.billingEvents.get(id);
+    if (!event) return undefined;
+    
+    const updatedEvent = {
+      ...event,
+      processed: success ? 1 : -1,
+      processingError: error || null,
+    };
+    this.billingEvents.set(id, updatedEvent);
+    return updatedEvent;
+  }
+
+  // Usage tracking methods
+  async getUsageTracking(userId: string, featureType: string, usageMonth: string): Promise<UsageTracking | undefined> {
+    const key = `${userId}-${featureType}-${usageMonth}`;
+    return Array.from(this.usageTracking.values()).find(usage => 
+      usage.userId === userId && usage.featureType === featureType && usage.usageMonth === usageMonth
+    );
+  }
+
+  async getUserUsageTracking(userId: string): Promise<UsageTracking[]> {
+    return Array.from(this.usageTracking.values()).filter(usage => usage.userId === userId);
+  }
+
+  async incrementUsage(userId: string, featureType: string): Promise<UsageTracking> {
+    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM format
+    const existingUsage = await this.getUsageTracking(userId, featureType, currentMonth);
+    
+    if (existingUsage) {
+      const updatedUsage = {
+        ...existingUsage,
+        usageCount: existingUsage.usageCount + 1,
+        lastUsed: new Date(),
+        updatedAt: new Date(),
+      };
+      this.usageTracking.set(existingUsage.id, updatedUsage);
+      return updatedUsage;
+    } else {
+      const id = randomUUID();
+      const newUsage: UsageTracking = {
+        id,
+        userId,
+        featureType,
+        usageMonth: currentMonth,
+        usageCount: 1,
+        lastUsed: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      this.usageTracking.set(id, newUsage);
+      return newUsage;
+    }
+  }
+
+  async resetMonthlyUsage(userId: string, featureType: string, usageMonth: string): Promise<void> {
+    const usage = await this.getUsageTracking(userId, featureType, usageMonth);
+    if (usage) {
+      const resetUsage = {
+        ...usage,
+        usageCount: 0,
+        updatedAt: new Date(),
+      };
+      this.usageTracking.set(usage.id, resetUsage);
+    }
+  }
+
+  async checkUsageLimit(userId: string, featureType: string): Promise<{ exceeded: boolean; current: number; limit: number; }> {
+    const user = await this.getUser(userId);
+    if (!user) throw new Error("User not found");
+    
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const usage = await this.getUsageTracking(userId, featureType, currentMonth);
+    const current = usage?.usageCount || 0;
+    
+    // Get limits based on subscription tier
+    let limit = 0;
+    switch (featureType) {
+      case 'bets':
+        limit = user.monthlyBetLimit === -1 ? Infinity : user.monthlyBetLimit;
+        break;
+      case 'bankrolls':
+        limit = user.maxBankrolls === -1 ? Infinity : user.maxBankrolls;
+        break;
+      case 'analytics_queries':
+        limit = user.advancedAnalytics ? -1 : 10; // Free users get 10 analytics queries
+        if (limit === -1) limit = Infinity;
+        break;
+      default:
+        limit = Infinity;
+    }
+    
+    return {
+      exceeded: current >= limit,
+      current,
+      limit: limit === Infinity ? -1 : limit,
+    };
+  }
+
+  // Subscription helper methods
+  async updateUserSubscriptionStatus(userId: string, subscription: Partial<Subscription>): Promise<PublicUser | undefined> {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+    
+    // Map subscription status to user fields
+    const subscriptionUpdates: Partial<User> = {
+      subscriptionStatus: subscription.status || user.subscriptionStatus,
+      subscriptionTier: subscription.tier || user.subscriptionTier,
+      stripeSubscriptionId: subscription.stripeSubscriptionId || user.stripeSubscriptionId,
+      subscriptionStartDate: subscription.currentPeriodStart || user.subscriptionStartDate,
+      subscriptionEndDate: subscription.currentPeriodEnd || user.subscriptionEndDate,
+      subscriptionCancelAtPeriodEnd: subscription.cancelAtPeriodEnd || user.subscriptionCancelAtPeriodEnd,
+      trialStartDate: subscription.trialStart || user.trialStartDate,
+      trialEndDate: subscription.trialEnd || user.trialEndDate,
+      updatedAt: new Date(),
+    };
+    
+    // Update user limits based on subscription tier
+    if (subscription.tier) {
+      const tierLimits = this.getTierLimits(subscription.tier);
+      Object.assign(subscriptionUpdates, tierLimits);
+    }
+    
+    return this.updateUser(userId, subscriptionUpdates);
+  }
+
+  async getUsersWithExpiredSubscriptions(): Promise<PublicUser[]> {
+    const now = new Date();
+    const expiredUsers: PublicUser[] = [];
+    
+    for (const [, user] of this.users) {
+      if (user.subscriptionEndDate && new Date(user.subscriptionEndDate) < now && 
+          user.subscriptionStatus === 'active') {
+        const { password, ...publicUser } = user;
+        expiredUsers.push(publicUser);
+      }
+    }
+    
+    return expiredUsers;
+  }
+
+  async getUserSubscriptionSummary(userId: string): Promise<{
+    currentPlan: string;
+    status: string;
+    nextBillingDate?: Date;
+    cancelAtPeriodEnd: boolean;
+    usage: Record<string, { current: number; limit: number; }>;
+  }> {
+    const user = await this.getUser(userId);
+    if (!user) throw new Error("User not found");
+    
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const betUsage = await this.getUsageTracking(userId, 'bets', currentMonth);
+    const analyticsUsage = await this.getUsageTracking(userId, 'analytics_queries', currentMonth);
+    
+    return {
+      currentPlan: user.subscriptionTier,
+      status: user.subscriptionStatus,
+      nextBillingDate: user.subscriptionEndDate || undefined,
+      cancelAtPeriodEnd: Boolean(user.subscriptionCancelAtPeriodEnd),
+      usage: {
+        bets: {
+          current: betUsage?.usageCount || 0,
+          limit: user.monthlyBetLimit,
+        },
+        analytics: {
+          current: analyticsUsage?.usageCount || 0,
+          limit: user.advancedAnalytics ? -1 : 10,
+        },
+        bankrolls: {
+          current: (await this.getBankrollsByUser(userId)).length,
+          limit: user.maxBankrolls,
+        },
+      },
+    };
+  }
+
+  private getTierLimits(tier: string): Partial<User> {
+    switch (tier) {
+      case 'free':
+        return {
+          monthlyBetLimit: 20,
+          maxBankrolls: 1,
+          advancedAnalytics: 0,
+          kellyCalculator: 0,
+        };
+      case 'premium':
+        return {
+          monthlyBetLimit: -1,
+          maxBankrolls: 10,
+          advancedAnalytics: 1,
+          kellyCalculator: 1,
+        };
+      case 'enterprise':
+        return {
+          monthlyBetLimit: -1,
+          maxBankrolls: -1,
+          advancedAnalytics: 1,
+          kellyCalculator: 1,
+        };
+      default:
+        return {};
+    }
   }
 }
 

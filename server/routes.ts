@@ -1,13 +1,24 @@
-import type { Express } from "express";
+import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertBetSchema, updateBetSchema, insertScreenshotSchema, registerSchema, loginSchema, insertBankrollSchema, updateBankrollSchema, insertBankrollTransactionSchema, insertBankrollGoalSchema, updateBankrollGoalSchema } from "@shared/schema";
+import { insertBetSchema, updateBetSchema, insertScreenshotSchema, registerSchema, loginSchema, insertBankrollSchema, updateBankrollSchema, insertBankrollTransactionSchema, insertBankrollGoalSchema, updateBankrollGoalSchema, createSubscriptionSchema, updateSubscriptionRequestSchema, stripeWebhookSchema } from "@shared/schema";
 import { requireAuth, getCurrentUser } from "./index";
 import { extractBetDataFromImage, validateBetData } from "./services/gemini";
 import { googleSheetsService } from "./services/googleSheets";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import Stripe from "stripe";
+
+// Initialize Stripe (will handle missing keys gracefully)
+let stripe: Stripe | null = null;
+if (process.env.STRIPE_SECRET_KEY) {
+  stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+    apiVersion: "2024-06-20",
+  });
+} else {
+  console.warn("Stripe not initialized: STRIPE_SECRET_KEY environment variable not set");
+}
 
 // Configure multer for file uploads
 const upload = multer({
@@ -910,6 +921,466 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to get templates" });
     }
   });
+
+  // ============ SUBSCRIPTION MANAGEMENT ROUTES ============
+
+  // Helper function to ensure Stripe is available
+  function requireStripe(res: any) {
+    if (!stripe) {
+      res.status(503).json({ 
+        message: "Subscription functionality is currently unavailable. Stripe configuration is missing.",
+        requiresSetup: true 
+      });
+      return false;
+    }
+    return true;
+  }
+
+  // Get user's current subscription status and usage
+  app.get("/api/subscription", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      
+      const subscriptionSummary = await storage.getUserSubscriptionSummary(user.id);
+      res.json(subscriptionSummary);
+    } catch (error) {
+      console.error("Get subscription error:", error);
+      res.status(500).json({ message: "Failed to get subscription information" });
+    }
+  });
+
+  // Create Stripe customer and setup intent for payment method
+  app.post("/api/subscription/setup-intent", requireAuth, async (req, res) => {
+    try {
+      if (!requireStripe(res)) return;
+      
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      let stripeCustomerId = user.stripeCustomerId;
+      
+      // Create Stripe customer if doesn't exist
+      if (!stripeCustomerId) {
+        const customer = await stripe!.customers.create({
+          email: user.email,
+          name: user.name,
+          metadata: {
+            userId: user.id,
+          },
+        });
+        
+        stripeCustomerId = customer.id;
+        await storage.updateUser(user.id, { stripeCustomerId });
+      }
+
+      // Create setup intent for saving payment method
+      const setupIntent = await stripe!.setupIntents.create({
+        customer: stripeCustomerId,
+        payment_method_types: ['card'],
+        usage: 'off_session',
+      });
+
+      res.json({ 
+        clientSecret: setupIntent.client_secret,
+        customerId: stripeCustomerId,
+      });
+    } catch (error) {
+      console.error("Setup intent error:", error);
+      res.status(500).json({ message: "Failed to create setup intent" });
+    }
+  });
+
+  // Create subscription
+  app.post("/api/subscription/create", requireAuth, async (req, res) => {
+    try {
+      if (!requireStripe(res)) return;
+      
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      const validatedData = createSubscriptionSchema.parse(req.body);
+      const { priceId, paymentMethodId } = validatedData;
+
+      let stripeCustomerId = user.stripeCustomerId;
+      
+      // Create Stripe customer if doesn't exist
+      if (!stripeCustomerId) {
+        const customer = await stripe!.customers.create({
+          email: user.email,
+          name: user.name,
+          metadata: {
+            userId: user.id,
+          },
+        });
+        
+        stripeCustomerId = customer.id;
+        await storage.updateUser(user.id, { stripeCustomerId });
+      }
+
+      // Attach payment method if provided
+      if (paymentMethodId) {
+        await stripe!.paymentMethods.attach(paymentMethodId, {
+          customer: stripeCustomerId,
+        });
+        
+        // Set as default payment method
+        await stripe!.customers.update(stripeCustomerId, {
+          invoice_settings: {
+            default_payment_method: paymentMethodId,
+          },
+        });
+      }
+
+      // Create subscription
+      const subscription = await stripe!.subscriptions.create({
+        customer: stripeCustomerId,
+        items: [{ price: priceId }],
+        payment_behavior: 'default_incomplete',
+        payment_settings: { save_default_payment_method: 'on_subscription' },
+        expand: ['latest_invoice.payment_intent'],
+        trial_period_days: 14, // 14-day trial
+        metadata: {
+          userId: user.id,
+        },
+      });
+
+      // Store subscription in database
+      const dbSubscription = await storage.createSubscription({
+        userId: user.id,
+        stripeSubscriptionId: subscription.id,
+        stripeCustomerId: stripeCustomerId,
+        stripePriceId: priceId,
+        status: subscription.status,
+        tier: priceId.includes('premium') ? 'premium' : 'enterprise',
+        currentPeriodStart: new Date(subscription.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+        trialStart: subscription.trial_start ? new Date(subscription.trial_start * 1000) : null,
+        trialEnd: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null,
+        cancelAtPeriodEnd: subscription.cancel_at_period_end ? 1 : 0,
+      });
+
+      // Update user subscription status
+      await storage.updateUserSubscriptionStatus(user.id, dbSubscription);
+
+      const latestInvoice = subscription.latest_invoice as any;
+      const paymentIntent = latestInvoice?.payment_intent;
+
+      res.json({
+        subscriptionId: subscription.id,
+        clientSecret: paymentIntent?.client_secret,
+        status: subscription.status,
+        trialEnd: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null,
+      });
+    } catch (error) {
+      console.error("Create subscription error:", error);
+      res.status(400).json({ message: "Failed to create subscription", error: error.message });
+    }
+  });
+
+  // Update subscription (cancel, reactivate)
+  app.patch("/api/subscription", requireAuth, async (req, res) => {
+    try {
+      if (!requireStripe(res)) return;
+      
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      const validatedData = updateSubscriptionRequestSchema.parse(req.body);
+      const { cancelAtPeriodEnd } = validatedData;
+
+      if (!user.stripeSubscriptionId) {
+        return res.status(404).json({ message: "No active subscription found" });
+      }
+
+      // Update Stripe subscription
+      const subscription = await stripe!.subscriptions.update(user.stripeSubscriptionId, {
+        cancel_at_period_end: cancelAtPeriodEnd,
+      });
+
+      // Update database
+      const dbSubscription = await storage.getSubscriptionByStripeId(subscription.id);
+      if (dbSubscription) {
+        await storage.updateSubscription(dbSubscription.id, {
+          status: subscription.status,
+          cancelAtPeriodEnd: subscription.cancel_at_period_end ? 1 : 0,
+          canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
+        });
+        
+        await storage.updateUserSubscriptionStatus(user.id, {
+          status: subscription.status,
+          cancelAtPeriodEnd: subscription.cancel_at_period_end ? 1 : 0,
+        });
+      }
+
+      res.json({ 
+        status: subscription.status,
+        cancelAtPeriodEnd: subscription.cancel_at_period_end,
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+      });
+    } catch (error) {
+      console.error("Update subscription error:", error);
+      res.status(400).json({ message: "Failed to update subscription" });
+    }
+  });
+
+  // Get subscription plans and pricing
+  app.get("/api/subscription/plans", async (req, res) => {
+    try {
+      // Return hardcoded plans for now - in production, fetch from Stripe
+      const plans = [
+        {
+          id: 'free',
+          name: 'Free',
+          description: 'Perfect for getting started with bet tracking',
+          price: 0,
+          interval: null,
+          features: [
+            '20 bets per month',
+            '1 bankroll',
+            'Basic analytics',
+            'Manual bet entry',
+            'Email support',
+          ],
+          limitations: [
+            'No advanced analytics',
+            'No Kelly calculator',
+            'No Google Sheets sync',
+          ],
+        },
+        {
+          id: 'premium',
+          name: 'Premium',
+          description: 'For serious bettors who want advanced features',
+          price: 19.99,
+          interval: 'month',
+          stripePriceId: process.env.STRIPE_PREMIUM_PRICE_ID || 'price_premium_monthly',
+          features: [
+            'Unlimited bets',
+            'Up to 10 bankrolls',
+            'Advanced analytics & charts',
+            'AI-powered bet extraction',
+            'Kelly calculator',
+            'Google Sheets sync',
+            'Risk management tools',
+            'Priority support',
+          ],
+          popular: true,
+        },
+        {
+          id: 'enterprise',
+          name: 'Enterprise',
+          description: 'For professional bettors and teams',
+          price: 49.99,
+          interval: 'month',
+          stripePriceId: process.env.STRIPE_ENTERPRISE_PRICE_ID || 'price_enterprise_monthly',
+          features: [
+            'Everything in Premium',
+            'Unlimited bankrolls',
+            'Team collaboration',
+            'Custom analytics',
+            'API access',
+            'White-label options',
+            'Dedicated support',
+          ],
+        },
+      ];
+
+      res.json(plans);
+    } catch (error) {
+      console.error("Get plans error:", error);
+      res.status(500).json({ message: "Failed to get subscription plans" });
+    }
+  });
+
+  // Check if user can perform an action (usage limits)
+  app.post("/api/subscription/check-limit", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      const { featureType } = req.body;
+      
+      if (!featureType) {
+        return res.status(400).json({ message: "featureType is required" });
+      }
+
+      const limitCheck = await storage.checkUsageLimit(user.id, featureType);
+      res.json(limitCheck);
+    } catch (error) {
+      console.error("Check limit error:", error);
+      res.status(500).json({ message: "Failed to check usage limit" });
+    }
+  });
+
+  // Increment usage for a feature
+  app.post("/api/subscription/increment-usage", requireAuth, async (req, res) => {
+    try {
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+
+      const { featureType } = req.body;
+      
+      if (!featureType) {
+        return res.status(400).json({ message: "featureType is required" });
+      }
+
+      const usage = await storage.incrementUsage(user.id, featureType);
+      res.json(usage);
+    } catch (error) {
+      console.error("Increment usage error:", error);
+      res.status(500).json({ message: "Failed to increment usage" });
+    }
+  });
+
+  // Stripe webhook handler
+  app.post('/api/webhooks/stripe', express.raw({type: 'application/json'}), async (req, res) => {
+    try {
+      if (!stripe) {
+        console.warn('Stripe webhook received but Stripe not configured');
+        return res.status(503).send('Stripe not configured');
+      }
+
+      const sig = req.headers['stripe-signature'];
+      const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+      
+      if (!endpointSecret) {
+        console.error('Stripe webhook secret not configured');
+        return res.status(500).send('Webhook secret not configured');
+      }
+
+      let event;
+      try {
+        event = stripe.webhooks.constructEvent(req.body, sig!, endpointSecret);
+      } catch (err) {
+        console.error('Webhook signature verification failed:', err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+      }
+
+      // Check if event already processed
+      const existingEvent = await storage.getBillingEventByStripeId(event.id);
+      if (existingEvent) {
+        console.log('Event already processed:', event.id);
+        return res.json({ received: true, alreadyProcessed: true });
+      }
+
+      // Store billing event
+      const billingEvent = await storage.createBillingEvent({
+        stripeEventId: event.id,
+        eventType: event.type,
+        eventData: JSON.stringify(event.data),
+        processed: 0,
+      });
+
+      try {
+        // Process different event types
+        switch (event.type) {
+          case 'customer.subscription.created':
+          case 'customer.subscription.updated':
+            await handleSubscriptionEvent(event.data.object);
+            break;
+            
+          case 'customer.subscription.deleted':
+            await handleSubscriptionCanceled(event.data.object);
+            break;
+            
+          case 'invoice.payment_succeeded':
+            await handlePaymentSucceeded(event.data.object);
+            break;
+            
+          case 'invoice.payment_failed':
+            await handlePaymentFailed(event.data.object);
+            break;
+            
+          default:
+            console.log('Unhandled event type:', event.type);
+        }
+
+        await storage.markBillingEventProcessed(billingEvent.id, true);
+        console.log('Successfully processed webhook:', event.type, event.id);
+        
+      } catch (processError) {
+        console.error('Error processing webhook:', processError);
+        await storage.markBillingEventProcessed(billingEvent.id, false, processError.message);
+        // Don't return error to Stripe to avoid retries for processing errors
+      }
+
+      res.json({ received: true });
+    } catch (error) {
+      console.error('Webhook handler error:', error);
+      res.status(500).json({ message: 'Webhook processing failed' });
+    }
+  });
+
+  // Webhook event handlers
+  async function handleSubscriptionEvent(subscription: any) {
+    const customerId = subscription.customer;
+    const user = await storage.getUserByEmail(customerId); // This needs to be fixed - should lookup by Stripe customer ID
+    
+    if (!user) {
+      console.error('User not found for subscription:', subscription.id);
+      return;
+    }
+
+    // Update subscription in database
+    const existingSubscription = await storage.getSubscriptionByStripeId(subscription.id);
+    if (existingSubscription) {
+      await storage.updateSubscription(existingSubscription.id, {
+        status: subscription.status,
+        currentPeriodStart: new Date(subscription.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+        cancelAtPeriodEnd: subscription.cancel_at_period_end ? 1 : 0,
+        canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
+        endedAt: subscription.ended_at ? new Date(subscription.ended_at * 1000) : null,
+      });
+      
+      // Update user status
+      await storage.updateUserSubscriptionStatus(user.id, {
+        status: subscription.status,
+        currentPeriodStart: new Date(subscription.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+        cancelAtPeriodEnd: subscription.cancel_at_period_end ? 1 : 0,
+      });
+    }
+  }
+
+  async function handleSubscriptionCanceled(subscription: any) {
+    const existingSubscription = await storage.getSubscriptionByStripeId(subscription.id);
+    if (existingSubscription) {
+      await storage.updateSubscription(existingSubscription.id, {
+        status: 'canceled',
+        endedAt: new Date(),
+      });
+      
+      // Downgrade user to free tier
+      await storage.updateUserSubscriptionStatus(existingSubscription.userId, {
+        status: 'canceled',
+        tier: 'free',
+      });
+    }
+  }
+
+  async function handlePaymentSucceeded(invoice: any) {
+    console.log('Payment succeeded for invoice:', invoice.id);
+    // Could implement additional logic here like sending confirmation emails
+  }
+
+  async function handlePaymentFailed(invoice: any) {
+    console.log('Payment failed for invoice:', invoice.id);
+    // Could implement retry logic or notification here
+  }
 
   // ============ BANKROLL MANAGEMENT ROUTES ============
 

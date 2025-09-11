@@ -11,6 +11,9 @@ import Bankrolls from "@/pages/bankrolls";
 import BankrollDashboard from "@/pages/bankroll-dashboard";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
+import Pricing from "@/pages/pricing";
+import Subscribe from "@/pages/subscribe";
+import SubscriptionDashboard from "@/pages/subscription-dashboard";
 import NotFound from "@/pages/not-found";
 import { useEffect } from "react";
 
@@ -95,6 +98,15 @@ function Router() {
       </Route>
       <Route path="/bankrolls/:id">
         <ProtectedRoute component={BankrollDashboard} />
+      </Route>
+      <Route path="/subscription">
+        <ProtectedRoute component={SubscriptionDashboard} />
+      </Route>
+      <Route path="/pricing">
+        <Pricing />
+      </Route>
+      <Route path="/subscribe">
+        <ProtectedRoute component={Subscribe} />
       </Route>
       <Route component={NotFound} />
     </Switch>

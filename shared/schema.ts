@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, decimal, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, decimal, timestamp, integer, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -8,13 +8,27 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
   password: text("password").notNull(),
-  subscriptionPlan: text("subscription_plan").notNull().default("free"), // free, premium
+  subscriptionPlan: text("subscription_plan").notNull().default("free"), // free, premium, enterprise
+  subscriptionStatus: text("subscription_status").notNull().default("inactive"), // inactive, active, trialing, past_due, canceled, unpaid
+  subscriptionTier: text("subscription_tier").notNull().default("free"), // free, premium, enterprise
+  stripeCustomerId: text("stripe_customer_id"),
+  stripeSubscriptionId: text("stripe_subscription_id"),
+  subscriptionStartDate: timestamp("subscription_start_date"),
+  subscriptionEndDate: timestamp("subscription_end_date"),
+  trialStartDate: timestamp("trial_start_date"),
+  trialEndDate: timestamp("trial_end_date"),
+  subscriptionCancelAtPeriodEnd: integer("subscription_cancel_at_period_end").default(0), // 0 = false, 1 = true
+  monthlyBetLimit: integer("monthly_bet_limit").notNull().default(20), // Monthly bet limit based on plan
+  maxBankrolls: integer("max_bankrolls").notNull().default(1), // Max bankrolls based on plan
+  advancedAnalytics: integer("advanced_analytics").notNull().default(0), // 0 = basic, 1 = advanced
+  kellyCalculator: integer("kelly_calculator").notNull().default(0), // 0 = disabled, 1 = enabled
   googleSheetsId: text("google_sheets_id"),
   googleAccessToken: text("google_access_token"),
   googleRefreshToken: text("google_refresh_token"),
   googleTokenExpiry: timestamp("google_token_expiry"),
   googleSheetsConnected: integer("google_sheets_connected").default(0), // 0 = not connected, 1 = connected
   createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const bankrolls = pgTable("bankrolls", {
@@ -94,6 +108,51 @@ export const screenshots = pgTable("screenshots", {
   processed: integer("processed").notNull().default(0), // 0 = pending, 1 = processed, -1 = failed
   extractedData: text("extracted_data"), // JSON string of AI extraction
   createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Subscription management table for tracking subscription events and billing history
+export const subscriptions = pgTable("subscriptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  stripeSubscriptionId: text("stripe_subscription_id").notNull().unique(),
+  stripeCustomerId: text("stripe_customer_id").notNull(),
+  stripePriceId: text("stripe_price_id").notNull(),
+  status: text("status").notNull(), // incomplete, incomplete_expired, trialing, active, past_due, canceled, unpaid
+  tier: text("tier").notNull(), // free, premium, enterprise
+  currentPeriodStart: timestamp("current_period_start").notNull(),
+  currentPeriodEnd: timestamp("current_period_end").notNull(),
+  trialStart: timestamp("trial_start"),
+  trialEnd: timestamp("trial_end"),
+  cancelAtPeriodEnd: integer("cancel_at_period_end").notNull().default(0), // 0 = false, 1 = true
+  canceledAt: timestamp("canceled_at"),
+  endedAt: timestamp("ended_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Billing events table for tracking all Stripe events
+export const billingEvents = pgTable("billing_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id),
+  subscriptionId: varchar("subscription_id").references(() => subscriptions.id),
+  stripeEventId: text("stripe_event_id").notNull().unique(),
+  eventType: text("event_type").notNull(), // customer.subscription.created, invoice.paid, etc.
+  eventData: text("event_data").notNull(), // JSON string of Stripe event data
+  processed: integer("processed").notNull().default(0), // 0 = pending, 1 = processed, -1 = failed
+  processingError: text("processing_error"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Usage tracking table for monitoring feature usage and enforcing limits
+export const usageTracking = pgTable("usage_tracking", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  featureType: text("feature_type").notNull(), // bets, bankrolls, analytics_queries, etc.
+  usageMonth: text("usage_month").notNull(), // YYYY-MM format
+  usageCount: integer("usage_count").notNull().default(0),
+  lastUsed: timestamp("last_used").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({
@@ -178,6 +237,60 @@ export const insertScreenshotSchema = createInsertSchema(screenshots).omit({
   createdAt: true,
 });
 
+export const insertSubscriptionSchema = createInsertSchema(subscriptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateSubscriptionSchema = insertSubscriptionSchema.partial();
+
+export const insertBillingEventSchema = createInsertSchema(billingEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertUsageTrackingSchema = createInsertSchema(usageTracking).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateUsageTrackingSchema = insertUsageTrackingSchema.partial();
+
+// Subscription plan configuration schema
+export const subscriptionPlanSchema = z.object({
+  tier: z.enum(["free", "premium", "enterprise"]),
+  monthlyBetLimit: z.number().min(0),
+  maxBankrolls: z.number().min(1),
+  advancedAnalytics: z.boolean(),
+  kellyCalculator: z.boolean(),
+  googleSheetsSync: z.boolean(),
+  price: z.number().min(0),
+  stripePriceId: z.string().optional(),
+});
+
+// Stripe webhook event schema
+export const stripeWebhookSchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  data: z.object({
+    object: z.any(),
+  }),
+  created: z.number(),
+});
+
+// Subscription creation request schema
+export const createSubscriptionSchema = z.object({
+  priceId: z.string().min(1, "Price ID is required"),
+  paymentMethodId: z.string().optional(),
+});
+
+// Subscription update request schema
+export const updateSubscriptionRequestSchema = z.object({
+  cancelAtPeriodEnd: z.boolean().optional(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type RegisterData = z.infer<typeof registerSchema>;
@@ -199,3 +312,74 @@ export type BetHistory = typeof betHistories.$inferSelect;
 export type InsertBetHistory = z.infer<typeof insertBetHistorySchema>;
 export type Screenshot = typeof screenshots.$inferSelect;
 export type InsertScreenshot = z.infer<typeof insertScreenshotSchema>;
+export type Subscription = typeof subscriptions.$inferSelect;
+export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
+export type UpdateSubscription = z.infer<typeof updateSubscriptionSchema>;
+export type BillingEvent = typeof billingEvents.$inferSelect;
+export type InsertBillingEvent = z.infer<typeof insertBillingEventSchema>;
+export type UsageTracking = typeof usageTracking.$inferSelect;
+export type InsertUsageTracking = z.infer<typeof insertUsageTrackingSchema>;
+export type UpdateUsageTracking = z.infer<typeof updateUsageTrackingSchema>;
+export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>;
+export type StripeWebhookEvent = z.infer<typeof stripeWebhookSchema>;
+export type CreateSubscriptionRequest = z.infer<typeof createSubscriptionSchema>;
+export type UpdateSubscriptionRequest = z.infer<typeof updateSubscriptionRequestSchema>;
+
+// Subscription plan definitions
+export const SUBSCRIPTION_PLANS: Record<string, SubscriptionPlan> = {
+  free: {
+    tier: "free",
+    monthlyBetLimit: 20,
+    maxBankrolls: 1,
+    advancedAnalytics: false,
+    kellyCalculator: false,
+    googleSheetsSync: false,
+    price: 0,
+  },
+  premium: {
+    tier: "premium",
+    monthlyBetLimit: -1, // Unlimited
+    maxBankrolls: 10,
+    advancedAnalytics: true,
+    kellyCalculator: true,
+    googleSheetsSync: true,
+    price: 19.99,
+    stripePriceId: "price_premium_monthly", // Will be replaced with actual Stripe price ID
+  },
+  enterprise: {
+    tier: "enterprise",
+    monthlyBetLimit: -1, // Unlimited
+    maxBankrolls: -1, // Unlimited
+    advancedAnalytics: true,
+    kellyCalculator: true,
+    googleSheetsSync: true,
+    price: 49.99,
+    stripePriceId: "price_enterprise_monthly", // Will be replaced with actual Stripe price ID
+  },
+};
+
+// Helper functions for subscription management
+export function getSubscriptionPlan(tier: string): SubscriptionPlan | undefined {
+  return SUBSCRIPTION_PLANS[tier];
+}
+
+export function canAccessFeature(user: PublicUser, feature: keyof SubscriptionPlan): boolean {
+  const plan = getSubscriptionPlan(user.subscriptionTier);
+  if (!plan) return false;
+  
+  // Special handling for numeric limits
+  if (feature === 'monthlyBetLimit' || feature === 'maxBankrolls') {
+    return plan[feature] === -1 || plan[feature] > 0;
+  }
+  
+  return Boolean(plan[feature]);
+}
+
+export function hasActiveSubscription(user: PublicUser): boolean {
+  return user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing';
+}
+
+export function isSubscriptionExpired(user: PublicUser): boolean {
+  if (!user.subscriptionEndDate) return false;
+  return new Date() > new Date(user.subscriptionEndDate);
+}
