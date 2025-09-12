@@ -241,9 +241,13 @@ export default function ManualBetForm({ open, onOpenChange }: ManualBetFormProps
   });
 
   const onSubmit = (data: ManualBetFormData) => {
+    console.log("🚀 Manual bet form submitted with data:", data);
+    console.log("🚀 Form errors:", form.formState.errors);
+    
     // Validate stake against bankroll limits before submission
     const validation = validateStakeAgainstBankroll(data.stake, data.bankrollId);
     if (!validation.isValid) {
+      console.log("❌ Stake validation failed:", validation.errorMessage);
       toast({
         title: "Stake Validation Failed",
         description: validation.errorMessage,
@@ -267,6 +271,7 @@ export default function ManualBetForm({ open, onOpenChange }: ManualBetFormProps
       // stakeUnits will be auto-calculated on the backend based on bankroll unitValue
     };
 
+    console.log("🚀 Submitting bet data:", betData);
     createBetMutation.mutate(betData);
   };
 

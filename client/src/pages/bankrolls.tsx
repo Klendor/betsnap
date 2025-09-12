@@ -199,6 +199,8 @@ export default function Bankrolls() {
   });
 
   const onSubmit = (data: CreateBankrollFormData) => {
+    console.log("🚀 Bankroll form submitted with data:", data);
+    console.log("🚀 Form errors:", form.formState.errors);
     createBankrollMutation.mutate(data);
   };
 
