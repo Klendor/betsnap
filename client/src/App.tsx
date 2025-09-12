@@ -15,6 +15,7 @@ import Register from "@/pages/register";
 import Pricing from "@/pages/pricing";
 import Subscribe from "@/pages/subscribe";
 import SubscriptionDashboard from "@/pages/subscription-dashboard";
+import Landing from "@/pages/landing";
 import NotFound from "@/pages/not-found";
 import { useEffect } from "react";
 
@@ -76,6 +77,23 @@ function AuthRoute({ component: Component }: { component: React.ComponentType })
   return null;
 }
 
+// Home route component (shows Landing for unauthenticated, Dashboard for authenticated)
+function HomeRoute() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  // Show loading while checking authentication
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  // Show Landing for unauthenticated users, Dashboard for authenticated users
+  return isAuthenticated ? <Dashboard /> : <Landing />;
+}
+
 function Router() {
   return (
     <Switch>
@@ -86,7 +104,7 @@ function Router() {
         <AuthRoute component={Register} />
       </Route>
       <Route path="/">
-        <ProtectedRoute component={Dashboard} />
+        <HomeRoute />
       </Route>
       <Route path="/dashboard">
         <ProtectedRoute component={Dashboard} />
@@ -108,6 +126,9 @@ function Router() {
       </Route>
       <Route path="/pricing">
         <Pricing />
+      </Route>
+      <Route path="/landing">
+        <Landing />
       </Route>
       <Route path="/subscribe">
         <ProtectedRoute component={Subscribe} />
