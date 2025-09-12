@@ -105,14 +105,17 @@ export default function Bankrolls() {
   // Create bankroll mutation
   const createBankrollMutation = useMutation({
     mutationFn: (data: CreateBankrollFormData) => {
+      // Convert string inputs to numbers for server schema compatibility
       const submitData = {
-        ...data,
-        startingBalance: data.startingBalance,
-        unitValue: data.unitValue,
-        maxBetPct: data.maxBetPct ? data.maxBetPct : "0.05",
-        dailyLossLimitPct: data.dailyLossLimitPct || null,
-        weeklyLossLimitPct: data.weeklyLossLimitPct || null,
-        kellyFraction: data.kellyFraction ? data.kellyFraction : "0.25",
+        name: data.name,
+        currency: data.currency,
+        unitMode: data.unitMode,
+        startingBalance: parseFloat(data.startingBalance),
+        unitValue: parseFloat(data.unitValue),
+        maxBetPct: data.maxBetPct ? parseFloat(data.maxBetPct) : 0.05,
+        dailyLossLimitPct: data.dailyLossLimitPct ? parseFloat(data.dailyLossLimitPct) : null,
+        weeklyLossLimitPct: data.weeklyLossLimitPct ? parseFloat(data.weeklyLossLimitPct) : null,
+        kellyFraction: data.kellyFraction ? parseFloat(data.kellyFraction) : 0.25,
       };
       return apiRequest('/api/bankrolls', {
         method: 'POST',
@@ -264,7 +267,7 @@ export default function Bankrolls() {
                 Create Bankroll
               </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-[600px]">
+            <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Create New Bankroll</DialogTitle>
                 <DialogDescription>
