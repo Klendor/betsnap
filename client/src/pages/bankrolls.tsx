@@ -302,7 +302,7 @@ export default function Bankrolls() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Currency</FormLabel>
-                          <Select onValueChange={field.onChange} defaultValue={field.value}>
+                          <Select onValueChange={field.onChange} value={field.value}>
                             <FormControl>
                               <SelectTrigger data-testid="select-currency">
                                 <SelectValue placeholder="Select currency" />
@@ -348,7 +348,7 @@ export default function Bankrolls() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Unit Mode</FormLabel>
-                          <Select onValueChange={field.onChange} defaultValue={field.value}>
+                          <Select onValueChange={field.onChange} value={field.value}>
                             <FormControl>
                               <SelectTrigger data-testid="select-unit-mode">
                                 <SelectValue placeholder="Select unit mode" />
