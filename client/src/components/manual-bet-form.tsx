@@ -300,14 +300,14 @@ export default function ManualBetForm({ open, onOpenChange }: ManualBetFormProps
                   <Select onValueChange={field.onChange} value={field.value} data-testid="select-bankroll">
                     <FormControl>
                       <SelectTrigger>
-                        <SelectValue placeholder="Select a bankroll" />
+                        <SelectValue placeholder={bankrollsLoading ? "Loading bankrolls..." : "Select a bankroll"} />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {bankrollsLoading ? (
-                        <SelectItem value="" disabled>Loading bankrolls...</SelectItem>
-                      ) : activeBankrolls.length === 0 ? (
-                        <SelectItem value="" disabled>No active bankrolls found</SelectItem>
+                      {activeBankrolls.length === 0 && !bankrollsLoading ? (
+                        <div className="px-2 py-3 text-sm text-muted-foreground text-center">
+                          No active bankrolls found
+                        </div>
                       ) : (
                         activeBankrolls.map((bankroll) => (
                           <SelectItem key={bankroll.id} value={bankroll.id}>
