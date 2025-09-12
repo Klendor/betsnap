@@ -4,8 +4,12 @@ import { Button } from "@/components/ui/button";
 import { TrendingUp, Plus, Filter, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import RecentBetsTable from "@/components/recent-bets-table";
+import ManualBetForm from "@/components/manual-bet-form";
+import { useState } from "react";
 
 export default function Bets() {
+  const [isAddBetOpen, setIsAddBetOpen] = useState(false);
+
   return (
     <div className="min-h-screen bg-background">
       <Navigation />
@@ -26,6 +30,7 @@ export default function Bets() {
           </div>
           <Button 
             className="mt-4 sm:mt-0 bg-primary hover:bg-primary/90 text-primary-foreground"
+            onClick={() => setIsAddBetOpen(true)}
             data-testid="button-add-bet"
           >
             <Plus className="w-4 h-4 mr-2" />
@@ -69,6 +74,12 @@ export default function Bets() {
           </CardContent>
         </Card>
       </div>
+      
+      {/* Manual Bet Entry Form */}
+      <ManualBetForm 
+        open={isAddBetOpen} 
+        onOpenChange={setIsAddBetOpen}
+      />
     </div>
   );
 }
