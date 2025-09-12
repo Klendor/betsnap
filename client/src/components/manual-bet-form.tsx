@@ -267,7 +267,7 @@ export default function ManualBetForm({ open, onOpenChange }: ManualBetFormProps
       stake: data.stake,
       potentialPayout: calculatePayout(data.odds, data.stake).toFixed(2),
       // Only include notes if it exists and is not empty
-      ...(data.notes && { notes: data.notes }),
+      ...(data.notes && data.notes.trim() && { notes: data.notes }),
       // stakeUnits will be auto-calculated on the backend based on bankroll unitValue
     };
 
@@ -530,7 +530,11 @@ export default function ManualBetForm({ open, onOpenChange }: ManualBetFormProps
                 Cancel
               </Button>
               <Button 
-                type="submit" 
+                type="button"
+                onClick={() => {
+                  console.log("🔥 Bet button clicked directly");
+                  form.handleSubmit(onSubmit)();
+                }}
                 disabled={
                   createBetMutation.isPending || 
                   activeBankrolls.length === 0 || 

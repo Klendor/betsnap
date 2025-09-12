@@ -501,7 +501,11 @@ export default function Bankrolls() {
                       Cancel
                     </Button>
                     <Button 
-                      type="submit" 
+                      type="button"
+                      onClick={() => {
+                        console.log("🔥 Button clicked directly");
+                        form.handleSubmit(onSubmit)();
+                      }}
                       disabled={createBankrollMutation.isPending}
                       data-testid="button-submit-create"
                     >
