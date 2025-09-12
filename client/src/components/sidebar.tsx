@@ -25,6 +25,14 @@ import {
 } from "lucide-react";
 import type { User } from "@shared/schema";
 
+// Type definitions for stats response
+interface UserStats {
+  totalBets: number;
+  winRate: number;
+  totalProfit: number;
+  pendingBets: number;
+}
+
 // Type definitions for API responses
 interface CompleteSetupResponse {
   sheetId: string;
@@ -54,7 +62,7 @@ export default function Sidebar() {
     queryKey: ['/api/user'],
   });
 
-  const { data: stats } = useQuery({
+  const { data: stats } = useQuery<UserStats>({
     queryKey: ['/api/user/stats'],
   });
 
@@ -103,8 +111,7 @@ export default function Sidebar() {
 
   const initiateGoogleAuthMutation = useMutation<{ authUrl: string }, Error>({
     mutationFn: async () => {
-      const response = await apiRequest('GET', '/api/auth/google');
-      return await response.json();
+      return await apiRequest('/api/auth/google', { method: 'GET' });
     },
     onSuccess: (data) => {
       if (data.authUrl) {
@@ -146,8 +153,10 @@ export default function Sidebar() {
 
   const completeSetupMutation = useMutation<CompleteSetupResponse, Error, any>({
     mutationFn: async (tokens: any) => {
-      const response = await apiRequest('POST', '/api/sheets/complete-setup', tokens);
-      return await response.json();
+      return await apiRequest('/api/sheets/complete-setup', { 
+        method: 'POST', 
+        body: JSON.stringify(tokens) 
+      });
     },
     onSuccess: (data: CompleteSetupResponse) => {
       queryClient.invalidateQueries({ queryKey: ['/api/user'] });
@@ -176,8 +185,10 @@ export default function Sidebar() {
 
   const syncBetsMutation = useMutation<SyncBetsResponse, Error>({
     mutationFn: async () => {
-      const response = await apiRequest('POST', '/api/sheets/sync-bets', {});
-      return await response.json();
+      return await apiRequest('/api/sheets/sync-bets', { 
+        method: 'POST', 
+        body: JSON.stringify({}) 
+      });
     },
     onSuccess: (data: SyncBetsResponse) => {
       setIsSyncing(false);
@@ -199,8 +210,10 @@ export default function Sidebar() {
 
   const disconnectMutation = useMutation<DisconnectResponse, Error>({
     mutationFn: async () => {
-      const response = await apiRequest('POST', '/api/sheets/disconnect', {});
-      return await response.json();
+      return await apiRequest('/api/sheets/disconnect', { 
+        method: 'POST', 
+        body: JSON.stringify({}) 
+      });
     },
     onSuccess: (data: DisconnectResponse) => {
       queryClient.invalidateQueries({ queryKey: ['/api/user'] });

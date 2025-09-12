@@ -39,7 +39,10 @@ export default function SubscriptionDashboard() {
 
   // Cancel subscription mutation
   const cancelSubscriptionMutation = useMutation({
-    mutationFn: () => apiRequest("PATCH", "/api/subscription", { cancelAtPeriodEnd: true }),
+    mutationFn: () => apiRequest("/api/subscription", { 
+      method: "PATCH", 
+      body: JSON.stringify({ cancelAtPeriodEnd: true }) 
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
       toast({
@@ -58,7 +61,10 @@ export default function SubscriptionDashboard() {
 
   // Reactivate subscription mutation
   const reactivateSubscriptionMutation = useMutation({
-    mutationFn: () => apiRequest("PATCH", "/api/subscription", { cancelAtPeriodEnd: false }),
+    mutationFn: () => apiRequest("/api/subscription", { 
+      method: "PATCH", 
+      body: JSON.stringify({ cancelAtPeriodEnd: false }) 
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
       toast({

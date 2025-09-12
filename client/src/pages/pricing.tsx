@@ -52,8 +52,7 @@ export default function Pricing() {
   // Create subscription setup intent
   const setupIntentMutation = useMutation<SetupIntentResponse>({
     mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/subscription/setup-intent");
-      return response.json();
+      return await apiRequest("/api/subscription/setup-intent", { method: "POST" });
     },
     onSuccess: (data) => {
       // Redirect to payment form with client secret

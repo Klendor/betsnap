@@ -93,7 +93,7 @@ export default function Bankrolls() {
       if (!bankrolls.length) return [];
       
       const balancePromises = bankrolls.map(async (bankroll) => {
-        const response = await apiRequest<BankrollBalance>(`/api/bankrolls/${bankroll.id}/balance`);
+        const response = await apiRequest(`/api/bankrolls/${bankroll.id}/balance`) as BankrollBalance;
         return { ...bankroll, currentBalance: response.balance };
       });
       

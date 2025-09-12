@@ -59,8 +59,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const loginMutation = useMutation({
     mutationFn: async (data: LoginData) => {
-      const response = await apiRequest('POST', '/api/auth/login', data);
-      return response.json();
+      return await apiRequest('/api/auth/login', { 
+        method: 'POST', 
+        body: JSON.stringify(data) 
+      });
     },
     onSuccess: (response) => {
       // Invalidate the auth check query to refetch user data
@@ -86,8 +88,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const registerMutation = useMutation({
     mutationFn: async (data: RegisterData) => {
-      const response = await apiRequest('POST', '/api/auth/register', data);
-      return response.json();
+      return await apiRequest('/api/auth/register', { 
+        method: 'POST', 
+        body: JSON.stringify(data) 
+      });
     },
     onSuccess: (response) => {
       // Invalidate the auth check query to refetch user data
@@ -113,8 +117,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const logoutMutation = useMutation({
     mutationFn: async () => {
-      const response = await apiRequest('POST', '/api/auth/logout', {});
-      return response.json();
+      return await apiRequest('/api/auth/logout', { 
+        method: 'POST', 
+        body: JSON.stringify({}) 
+      });
     },
     onSuccess: () => {
       // Clear all cached data
@@ -139,7 +145,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const isAuthenticated = !!user;
 
   const contextValue: AuthContextType = {
-    user,
+    user: user || null,
     isAuthenticated,
     isLoading,
     login: loginMutation.mutateAsync,
