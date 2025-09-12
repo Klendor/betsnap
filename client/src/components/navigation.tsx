@@ -101,13 +101,15 @@ export default function Navigation() {
                 >
                   Dashboard
                 </Link>
-                <a 
-                  href="#" 
-                  className="text-muted-foreground hover:text-foreground transition-colors text-interactive" 
+                <Link 
+                  href="/bets" 
+                  className={`font-medium transition-colors text-interactive ${
+                    location === '/bets' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+                  }`}
                   data-testid="nav-bets"
                 >
                   Bets
-                </a>
+                </Link>
                 <Link 
                   href="/bankrolls" 
                   className={`font-medium transition-colors text-interactive ${
@@ -128,6 +130,18 @@ export default function Navigation() {
                 </Link>
               </div>
             )}
+            {/* Always show Pricing link */}
+            <div className="hidden lg:flex">
+              <Link 
+                href="/pricing" 
+                className={`font-medium transition-colors text-interactive ${
+                  location === '/pricing' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+                }`}
+                data-testid="nav-pricing"
+              >
+                Pricing
+              </Link>
+            </div>
           </div>
           <div className="flex items-center space-x-3">
             {/* Mobile Menu */}
@@ -160,10 +174,10 @@ export default function Navigation() {
                       onClick={() => setMobileMenuOpen(false)}
                     />
                     <MobileNavLink 
-                      href="#" 
+                      href="/bets" 
                       icon={TrendingUp} 
                       label="Bets" 
-                      isActive={false}
+                      isActive={location === '/bets'}
                       onClick={() => setMobileMenuOpen(false)}
                     />
                     <MobileNavLink 
@@ -178,6 +192,13 @@ export default function Navigation() {
                       icon={BarChart3} 
                       label="Analytics" 
                       isActive={location === '/analytics'}
+                      onClick={() => setMobileMenuOpen(false)}
+                    />
+                    <MobileNavLink 
+                      href="/pricing" 
+                      icon={Crown} 
+                      label="Pricing" 
+                      isActive={location === '/pricing'}
                       onClick={() => setMobileMenuOpen(false)}
                     />
                     
@@ -267,6 +288,12 @@ export default function Navigation() {
                         <span>Analytics</span>
                       </Link>
                     </DropdownMenuItem>
+                    <DropdownMenuItem asChild data-testid="menu-subscription">
+                      <Link href="/subscription" className="flex items-center">
+                        <Crown className="mr-2 h-4 w-4" />
+                        <span>Subscription</span>
+                      </Link>
+                    </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem 
                       onClick={handleLogout}
@@ -280,6 +307,11 @@ export default function Navigation() {
               </>
             ) : (
               <div className="flex items-center space-x-3">
+                <Link href="/pricing" className="lg:hidden">
+                  <Button variant="ghost" data-testid="nav-pricing-mobile" size="sm">
+                    Pricing
+                  </Button>
+                </Link>
                 <ThemeToggle />
                 <Link href="/login">
                   <Button variant="ghost" data-testid="nav-login" size="sm">

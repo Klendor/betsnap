@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import Dashboard from "@/pages/dashboard";
 import Analytics from "@/pages/analytics";
+import Bets from "@/pages/bets";
 import Bankrolls from "@/pages/bankrolls";
 import BankrollDashboard from "@/pages/bankroll-dashboard";
 import Login from "@/pages/login";
@@ -89,6 +90,9 @@ function Router() {
       </Route>
       <Route path="/dashboard">
         <ProtectedRoute component={Dashboard} />
+      </Route>
+      <Route path="/bets">
+        <ProtectedRoute component={Bets} />
       </Route>
       <Route path="/analytics">
         <ProtectedRoute component={Analytics} />
