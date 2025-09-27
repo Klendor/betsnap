@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import { apiRequest } from "@/lib/queryClient";
 import { 
   Table, 
@@ -23,7 +24,6 @@ import {
   Loader2,
   X
 } from "lucide-react";
-import type { User } from "@shared/schema";
 
 // Type definitions for stats response
 interface UserStats {
@@ -57,13 +57,14 @@ export default function Sidebar() {
   const [authWindow, setAuthWindow] = useState<Window | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { profile } = useAuth();
 
-  const { data: user } = useQuery<User>({
-    queryKey: ['/api/user'],
-  });
+  // Use profile as user data
+  const user = profile;
 
   const { data: stats } = useQuery<UserStats>({
     queryKey: ['/api/user/stats'],
+    enabled: !!user,
   });
 
   // Listen for OAuth completion messages

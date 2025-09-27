@@ -1,17 +1,33 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
-import { apiRequest } from '@/lib/queryClient';
 import { useToast } from '@/hooks/use-toast';
-import type { User, LoginData, RegisterData } from '@shared/schema';
+import { supabase } from '@/lib/supabase';
+import { Session, User as SupabaseUser } from '@supabase/supabase-js';
+
+// User profile type from our database
+interface UserProfile {
+  id: string;
+  email: string;
+  name: string;
+  subscription_plan?: string;
+  subscription_status?: string;
+  monthly_bet_limit?: number;
+  max_bankrolls?: number;
+  advanced_analytics?: boolean;
+  kelly_calculator?: boolean;
+  google_sheets_connected?: boolean;
+}
 
 interface AuthContextType {
-  user: User | null;
+  user: SupabaseUser | null;
+  profile: UserProfile | null;
+  session: Session | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (data: LoginData) => Promise<void>;
-  register: (data: RegisterData) => Promise<void>;
-  logout: () => Promise<void>;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string, name: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -31,126 +47,199 @@ interface AuthProviderProps {
 export function AuthProvider({ children }: AuthProviderProps) {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const queryClient = useQueryClient();
+  const [user, setUser] = useState<SupabaseUser | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Get current user session
-  const { data: user, isLoading, error } = useQuery<User | null>({
-    queryKey: ['/api/auth/me'],
-    queryFn: async () => {
-      try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-        });
-        if (response.status === 401) {
-          return null; // Not authenticated
-        }
-        if (!response.ok) {
-          throw new Error('Failed to get user');
-        }
-        return response.json();
-      } catch (error) {
-        console.error('Auth check failed:', error);
+  // Fetch user profile from database
+  const fetchProfile = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching profile:', error);
         return null;
       }
-    },
-    retry: false,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-  });
 
-  const loginMutation = useMutation({
-    mutationFn: async (data: LoginData) => {
-      return await apiRequest('/api/auth/login', { 
-        method: 'POST', 
-        body: JSON.stringify(data) 
-      });
-    },
-    onSuccess: (response) => {
-      // Invalidate the auth check query to refetch user data
-      queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/user'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/user/stats'] });
+      return data as UserProfile;
+    } catch (error) {
+      console.error('Error fetching profile:', error);
+      return null;
+    }
+  };
+
+  // Refresh profile data
+  const refreshProfile = async () => {
+    if (user) {
+      const newProfile = await fetchProfile(user.id);
+      setProfile(newProfile);
+    }
+  };
+
+  // Initialize auth state
+  useEffect(() => {
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
       
+      if (session?.user) {
+        fetchProfile(session.user.id).then(setProfile);
+      }
+      
+      setIsLoading(false);
+    });
+
+    // Listen for auth changes
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      
+      if (session?.user) {
+        const userProfile = await fetchProfile(session.user.id);
+        setProfile(userProfile);
+      } else {
+        setProfile(null);
+      }
+      
+      setIsLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Sign in function
+  const signIn = async (email: string, password: string) => {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      if (data.user) {
+        const userProfile = await fetchProfile(data.user.id);
+        setProfile(userProfile);
+      }
+
       toast({
         title: "Login successful!",
         description: "Welcome back to BetSnap.",
       });
+      
       setLocation("/dashboard");
-    },
-    onError: (error: Error) => {
-      console.error('Login failed:', error);
+    } catch (error: any) {
+      console.error('Login error:', error);
       toast({
         title: "Login failed",
         description: error.message || "Please check your email and password.",
         variant: "destructive",
       });
-    },
-  });
+      throw error;
+    }
+  };
 
-  const registerMutation = useMutation({
-    mutationFn: async (data: RegisterData) => {
-      return await apiRequest('/api/auth/register', { 
-        method: 'POST', 
-        body: JSON.stringify(data) 
+  // Sign up function
+  const signUp = async (email: string, password: string, name: string) => {
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            name,
+          },
+        },
       });
-    },
-    onSuccess: (response) => {
-      // Invalidate the auth check query to refetch user data
-      queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/user'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/user/stats'] });
-      
+
+      if (error) throw error;
+
+      // Create user profile
+      if (data.user) {
+        const { error: profileError } = await supabase
+          .from('user_profiles')
+          .insert({
+            id: data.user.id,
+            email: data.user.email!,
+            name,
+          });
+
+        if (profileError) {
+          console.error('Profile creation error:', profileError);
+          // Delete the auth user if profile creation fails
+          await supabase.auth.admin.deleteUser(data.user.id);
+          throw profileError;
+        }
+
+        // Fetch the created profile
+        const userProfile = await fetchProfile(data.user.id);
+        setProfile(userProfile);
+      }
+
       toast({
         title: "Account created!",
-        description: "Welcome to BetSnap. You can now start tracking your bets.",
+        description: "Welcome to BetSnap. Please check your email to verify your account.",
       });
+      
       setLocation("/dashboard");
-    },
-    onError: (error: Error) => {
-      console.error('Registration failed:', error);
+    } catch (error: any) {
+      console.error('Signup error:', error);
       toast({
         title: "Registration failed",
         description: error.message || "Please try again with different details.",
         variant: "destructive",
       });
-    },
-  });
+      throw error;
+    }
+  };
 
-  const logoutMutation = useMutation({
-    mutationFn: async () => {
-      return await apiRequest('/api/auth/logout', { 
-        method: 'POST', 
-        body: JSON.stringify({}) 
-      });
-    },
-    onSuccess: () => {
-      // Clear all cached data
-      queryClient.clear();
-      
+  // Sign out function
+  const signOut = async () => {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      setUser(null);
+      setProfile(null);
+      setSession(null);
+
       toast({
         title: "Logged out",
         description: "You have been successfully logged out.",
       });
+      
       setLocation("/login");
-    },
-    onError: (error: Error) => {
-      console.error('Logout failed:', error);
+    } catch (error: any) {
+      console.error('Logout error:', error);
       toast({
         title: "Logout failed",
         description: error.message || "Please try again.",
         variant: "destructive",
       });
-    },
-  });
+      throw error;
+    }
+  };
 
-  const isAuthenticated = !!user;
+  const isAuthenticated = !!session;
 
   const contextValue: AuthContextType = {
-    user: user || null,
+    user,
+    profile,
+    session,
     isAuthenticated,
     isLoading,
-    login: loginMutation.mutateAsync,
-    register: registerMutation.mutateAsync,
-    logout: logoutMutation.mutateAsync,
+    signIn,
+    signUp,
+    signOut,
+    refreshProfile,
   };
 
   return (

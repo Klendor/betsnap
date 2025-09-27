@@ -37,13 +37,13 @@ export default function CaptureInterface() {
   const [selectedBankrollId, setSelectedBankrollId] = useState<string>("");
   const [stakeUnits, setStakeUnits] = useState<string>("");
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { profile } = useAuth();
   const queryClient = useQueryClient();
 
   // Fetch user's bankrolls
   const { data: bankrolls = [], isLoading: bankrollsLoading } = useQuery<Bankroll[]>({
     queryKey: ['/api/bankrolls'],
-    enabled: !!user,
+    enabled: !!profile,
   });
 
   // Get the selected bankroll details

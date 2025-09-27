@@ -17,21 +17,21 @@ import { Link, useLocation } from "wouter";
 import { Camera, Crown, User, LogOut, Settings, BarChart3, Wallet, Menu, X, TrendingUp, Home } from "lucide-react";
 
 export default function Navigation() {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { profile, isAuthenticated, signOut } = useAuth();
   const [location] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handleLogout = async () => {
     try {
-      await logout();
+      await signOut();
     } catch (error) {
       console.error('Logout failed:', error);
     }
   };
 
   const getUserInitials = () => {
-    if (!user?.name) return 'U';
-    return user.name.split(' ').map(n => n[0]).join('').toUpperCase();
+    if (!profile?.name) return 'U';
+    return profile.name.split(' ').map(n => n[0]).join('').toUpperCase();
   };
 
   // Mobile Navigation Link Component - Fixed scoping issue
@@ -238,7 +238,7 @@ export default function Navigation() {
             
             {isAuthenticated ? (
               <>
-                {user?.subscriptionPlan === 'premium' && (
+                {profile?.subscription_plan === 'premium' && (
                   <Badge variant="secondary" className="hidden sm:flex items-center space-x-2 bg-accent/10 text-accent" data-testid="premium-badge">
                     <Crown className="w-3 h-3" />
                     <span>Premium</span>
@@ -265,9 +265,9 @@ export default function Navigation() {
                   <DropdownMenuContent className="w-56" align="end" forceMount>
                     <DropdownMenuLabel className="font-normal">
                       <div className="flex flex-col space-y-1">
-                        <p className="text-sm font-medium leading-none">{user?.name}</p>
+                        <p className="text-sm font-medium leading-none">{profile?.name}</p>
                         <p className="text-xs leading-none text-muted-foreground">
-                          {user?.email}
+                          {profile?.email}
                         </p>
                       </div>
                     </DropdownMenuLabel>

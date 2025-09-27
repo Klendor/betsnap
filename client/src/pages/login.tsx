@@ -7,11 +7,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useAuth } from "@/contexts/AuthContext";
-import { loginSchema, type LoginData } from "@shared/schema";
+import { z } from "zod";
 import { Camera, LogIn, Loader2 } from "lucide-react";
 
+// Login schema for validation
+const loginSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(1, "Password is required"),
+});
+
+type LoginData = z.infer<typeof loginSchema>;
+
 export default function Login() {
-  const { login } = useAuth();
+  const { signIn } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   
   const form = useForm<LoginData>({
@@ -25,7 +33,7 @@ export default function Login() {
   const onSubmit = async (data: LoginData) => {
     try {
       setIsLoading(true);
-      await login(data);
+      await signIn(data.email, data.password);
       // Navigation handled by AuthContext
     } catch (error) {
       // Error handling done by AuthContext

@@ -7,11 +7,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useAuth } from "@/contexts/AuthContext";
-import { registerSchema, type RegisterData } from "@shared/schema";
+import { z } from "zod";
 import { Camera, UserPlus, Loader2 } from "lucide-react";
 
+// Register schema for validation
+const registerSchema = z.object({
+  name: z.string().min(1, "Name is required").max(100),
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+});
+
+type RegisterData = z.infer<typeof registerSchema>;
+
 export default function Register() {
-  const { register } = useAuth();
+  const { signUp } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   
   const form = useForm<RegisterData>({
@@ -26,7 +35,7 @@ export default function Register() {
   const onSubmit = async (data: RegisterData) => {
     try {
       setIsLoading(true);
-      await register(data);
+      await signUp(data.email, data.password, data.name);
       // Navigation handled by AuthContext
     } catch (error) {
       // Error handling done by AuthContext
