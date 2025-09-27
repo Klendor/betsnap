@@ -168,6 +168,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Analytics error:", error);
       res.status(500).json({ message: "Failed to get analytics data" });
+// Clean up temp file (serverless/Vercel doesn't persist filesystem)\nfs.unlinkSync(req.file.path);\nconsole.log('Temp file cleaned up');\n
     }
   });
 
