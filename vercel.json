@@ -1,1 +1,15 @@
-{\n  \"builds\": [\n    {\n      \"src\": \"package.json\",\n      \"use\": \"@vercel/static-build\",\n      \"config\": { \"distDir\": \"client/dist\" }\n    },\n    {\n      \"src\": \"server/index.ts\",\n      \"use\": \"@vercel/node\",\n      \"config\": { \"includeFiles\": [\"dist/**/*.js\", \"shared/**/*.ts\"] }\n    }\n  ],\n  \"routes\": [\n    {\n      \"src\": \"/api/(.*)\",\n      \"dest\": \"/server/index.ts\"\n    },\n    {\n      \"src\": \"/((?!_next|_vercel|api|.*\\\\.).*)\",\n      \"dest\": \"/client/dist/index.html\"\n    }\n  ],\n  \"functions\": {\n    \"server/index.ts\": {\n      \"runtime\": \"nodejs18.x\",\n      \"maxDuration\": 30\n    }\n  },\n  \"env\": {\n    \"NODE_ENV\": \"production\"\n  }\n}
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist/public",
+  "framework": "vite",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
