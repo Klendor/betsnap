@@ -9,7 +9,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import FileDropzone from "./file-dropzone";
-import { apiRequest } from "@/lib/queryClient";
+import { betsService } from "@/lib/services/bets";
+import { bankrollsService, type Bankroll } from "@/lib/services/bankrolls";
 import { Camera, CloudUpload, Edit, Table, Loader2, Wallet, AlertTriangle } from "lucide-react";
 
 interface ExtractedData {
@@ -20,15 +21,6 @@ interface ExtractedData {
   stake: string;
   potentialPayout: string;
   confidence: number;
-}
-
-interface Bankroll {
-  id: string;
-  name: string;
-  currency: string;
-  unitMode: string;
-  unitValue: string;
-  isActive: number;
 }
 
 export default function CaptureInterface() {
@@ -42,7 +34,8 @@ export default function CaptureInterface() {
 
   // Fetch user's bankrolls
   const { data: bankrolls = [], isLoading: bankrollsLoading } = useQuery<Bankroll[]>({
-    queryKey: ['/api/bankrolls'],
+    queryKey: ['bankrolls'],
+    queryFn: bankrollsService.getUserBankrolls,
     enabled: !!profile,
   });
 
@@ -51,7 +44,7 @@ export default function CaptureInterface() {
 
   // Auto-select active bankroll on load
   useEffect(() => {
-    const activeBankroll = bankrolls.find(b => b.isActive === 1);
+    const activeBankroll = bankrolls.find(b => b.is_active);
     if (activeBankroll && !selectedBankrollId) {
       setSelectedBankrollId(activeBankroll.id);
     }
@@ -96,11 +89,11 @@ export default function CaptureInterface() {
 
   const saveBetMutation = useMutation({
     mutationFn: async (betData: any) => {
-      return await apiRequest('POST', '/api/bets', betData);
+      return await betsService.createBet(betData);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/bets'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/user/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['bets'] });
+      queryClient.invalidateQueries({ queryKey: ['user-stats'] });
       toast({
         title: "Bet saved!",
         description: "Your bet has been added to the tracking system.",
@@ -145,13 +138,14 @@ export default function CaptureInterface() {
     const betData = {
       sport: extractedData.sport,
       event: extractedData.event,
-      betType: extractedData.betType,
+      bet_type: extractedData.betType,
       odds: extractedData.odds,
-      stake: extractedData.stake,
-      potentialPayout: extractedData.potentialPayout,
-      status: "pending",
-      bankrollId: selectedBankrollId,
-      extractedData: JSON.stringify(extractedData),
+      stake: parseFloat(extractedData.stake),
+      stake_units: parseFloat(stakeUnits) || 1,
+      potential_payout: parseFloat(extractedData.potentialPayout),
+      status: "pending" as const,
+      bankroll_id: selectedBankrollId,
+      extracted_data: extractedData,
     };
 
     saveBetMutation.mutate(betData);
@@ -165,13 +159,13 @@ export default function CaptureInterface() {
     if (field === 'stake' && selectedBankroll) {
       const stakeValue = parseFloat(value);
       if (!isNaN(stakeValue) && stakeValue > 0) {
-        const unitValue = parseFloat(selectedBankroll.unitValue);
-        if (selectedBankroll.unitMode === 'fixed') {
+        const unitValue = selectedBankroll.unit_value;
+        if (selectedBankroll.unit_mode === 'fixed') {
           const units = stakeValue / unitValue;
           setStakeUnits(units.toFixed(2));
         } else {
           // For percent mode, units = stake percentage / unit percentage
-          const balanceNeeded = stakeValue / (unitValue); // Rough estimate
+          const balanceNeeded = stakeValue / unitValue; // Rough estimate
           setStakeUnits((stakeValue / unitValue).toFixed(2));
         }
       }
@@ -185,10 +179,10 @@ export default function CaptureInterface() {
     
     const unitsValue = parseFloat(units);
     if (!isNaN(unitsValue) && unitsValue > 0) {
-      const unitValue = parseFloat(selectedBankroll.unitValue);
+      const unitValue = selectedBankroll.unit_value;
       let stakeValue: number;
       
-      if (selectedBankroll.unitMode === 'fixed') {
+      if (selectedBankroll.unit_mode === 'fixed') {
         stakeValue = unitsValue * unitValue;
       } else {
         // For percent mode, this would need current balance but we'll use a simple calculation

@@ -11,18 +11,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { betsService, type Bet } from "@/lib/services/bets";
+import { bankrollsService, type Bankroll } from "@/lib/services/bankrolls";
 import { ArrowRight, Edit, Copy, Trash2, ChevronDown, ChevronRight, History, MoreHorizontal, CheckSquare, Square, Wallet } from "lucide-react";
-import type { Bet, BetHistory } from "@shared/schema";
-
-interface Bankroll {
-  id: string;
-  name: string;
-  currency: string;
-  unitMode: string;
-  unitValue: string;
-  isActive: number;
-}
 
 interface BulkAction {
   action: string;
@@ -41,12 +32,14 @@ export default function RecentBetsTable() {
   const queryClient = useQueryClient();
 
   const { data: bets, isLoading, error } = useQuery<Bet[]>({
-    queryKey: ['/api/bets'],
+    queryKey: ['bets'],
+    queryFn: betsService.getUserBets,
   });
 
   // Fetch user's bankrolls for editing
   const { data: bankrolls = [] } = useQuery<Bankroll[]>({
-    queryKey: ['/api/bankrolls'],
+    queryKey: ['bankrolls'],
+    queryFn: bankrollsService.getUserBankrolls,
   });
 
   // Helper function to get bankroll info
@@ -66,13 +59,10 @@ export default function RecentBetsTable() {
   // Update bet mutation
   const updateBetMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Partial<Bet> }) => {
-      return apiRequest(`/api/bets/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(data),
-      });
+      return betsService.updateBet(id, data);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/bets'] });
+      queryClient.invalidateQueries({ queryKey: ['bets'] });
       setEditingBet(null);
       setEditFormData({});
       toast({
@@ -92,10 +82,10 @@ export default function RecentBetsTable() {
   // Delete bet mutation
   const deleteBetMutation = useMutation({
     mutationFn: async (id: string) => {
-      return apiRequest(`/api/bets/${id}`, { method: 'DELETE' });
+      return betsService.deleteBet(id);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/bets'] });
+      queryClient.invalidateQueries({ queryKey: ['bets'] });
       toast({
         title: "Bet deleted",
         description: "The bet has been successfully deleted.",

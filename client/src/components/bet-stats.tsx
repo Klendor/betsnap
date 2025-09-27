@@ -1,17 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { TrendingUp, Trophy, DollarSign, Clock } from "lucide-react";
+import { betsService } from "@/lib/services/bets";
 
-interface UserStats {
-  totalBets: number;
-  winRate: number;
-  totalProfit: number;
-  pendingBets: number;
-}
+type UserStats = Awaited<ReturnType<typeof betsService.getUserStats>>;
 
 export default function BetStats() {
   const { data: stats, isLoading } = useQuery<UserStats>({
-    queryKey: ['/api/user/stats'],
+    queryKey: ['user-stats'],
+    queryFn: betsService.getUserStats,
   });
 
   if (isLoading) {

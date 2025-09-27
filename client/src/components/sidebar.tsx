@@ -25,13 +25,9 @@ import {
   X
 } from "lucide-react";
 
-// Type definitions for stats response
-interface UserStats {
-  totalBets: number;
-  winRate: number;
-  totalProfit: number;
-  pendingBets: number;
-}
+// Import user stats type from bets service
+import { betsService } from '@/lib/services/bets';
+type UserStats = Awaited<ReturnType<typeof betsService.getUserStats>>;
 
 // Type definitions for API responses
 interface CompleteSetupResponse {
@@ -63,7 +59,8 @@ export default function Sidebar() {
   const user = profile;
 
   const { data: stats } = useQuery<UserStats>({
-    queryKey: ['/api/user/stats'],
+    queryKey: ['user-stats'],
+    queryFn: betsService.getUserStats,
     enabled: !!user,
   });
 
