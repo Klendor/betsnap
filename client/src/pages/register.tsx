@@ -9,6 +9,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { useAuth } from "@/contexts/AuthContext";
 import { z } from "zod";
 import { Camera, UserPlus, Loader2 } from "lucide-react";
+import { FaGoogle, FaGithub } from "react-icons/fa";
 
 // Register schema for validation
 const registerSchema = z.object({
@@ -20,8 +21,9 @@ const registerSchema = z.object({
 type RegisterData = z.infer<typeof registerSchema>;
 
 export default function Register() {
-  const { signUp } = useAuth();
+  const { signUp, signInWithGoogle, signInWithGitHub } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
+  const [isSocialLoading, setIsSocialLoading] = useState(false);
   
   const form = useForm<RegisterData>({
     resolver: zodResolver(registerSchema),
@@ -42,6 +44,28 @@ export default function Register() {
       console.error('Registration failed:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    try {
+      setIsSocialLoading(true);
+      await signInWithGoogle();
+    } catch (error) {
+      console.error('Google sign in failed:', error);
+    } finally {
+      setIsSocialLoading(false);
+    }
+  };
+
+  const handleGitHubSignIn = async () => {
+    try {
+      setIsSocialLoading(true);
+      await signInWithGitHub();
+    } catch (error) {
+      console.error('GitHub sign in failed:', error);
+    } finally {
+      setIsSocialLoading(false);
     }
   };
 
@@ -135,6 +159,48 @@ export default function Register() {
                 </Button>
               </form>
             </Form>
+            
+            <div className="relative my-6">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-background px-2 text-muted-foreground">
+                  Or sign up with
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleGoogleSignIn}
+                disabled={isSocialLoading || isLoading}
+                className="w-full"
+              >
+                {isSocialLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <FaGoogle className="w-4 h-4 mr-2" />
+                )}
+                Google
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleGitHubSignIn}
+                disabled={isSocialLoading || isLoading}
+                className="w-full"
+              >
+                {isSocialLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <FaGithub className="w-4 h-4 mr-2" />
+                )}
+                GitHub
+              </Button>
+            </div>
             
             <div className="mt-6 text-center">
               <p className="text-sm text-muted-foreground">

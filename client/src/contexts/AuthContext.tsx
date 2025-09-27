@@ -27,6 +27,8 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, name: string) => Promise<void>;
   signOut: () => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
+  signInWithGitHub: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
 
@@ -62,6 +64,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
         .single();
 
       if (error) {
+        // Profile doesn't exist yet (might be a new social login)
+        if (error.code === 'PGRST116') {
+          return null;
+        }
         console.error('Error fetching profile:', error);
         return null;
       }
@@ -69,6 +75,36 @@ export function AuthProvider({ children }: AuthProviderProps) {
       return data as UserProfile;
     } catch (error) {
       console.error('Error fetching profile:', error);
+      return null;
+    }
+  };
+
+  // Create profile for social login users
+  const createProfileForSocialUser = async (user: SupabaseUser) => {
+    try {
+      const profileData = {
+        id: user.id,
+        email: user.email!,
+        name: user.user_metadata?.full_name || 
+              user.user_metadata?.name || 
+              user.email?.split('@')[0] || 
+              'User',
+      };
+
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .insert(profileData)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error creating profile:', error);
+        return null;
+      }
+
+      return data as UserProfile;
+    } catch (error) {
+      console.error('Error creating profile:', error);
       return null;
     }
   };
@@ -103,7 +139,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setUser(session?.user ?? null);
       
       if (session?.user) {
-        const userProfile = await fetchProfile(session.user.id);
+        let userProfile = await fetchProfile(session.user.id);
+        
+        // If no profile exists and this is a social login, create one
+        if (!userProfile && (session.user.app_metadata.provider === 'google' || 
+                            session.user.app_metadata.provider === 'github')) {
+          userProfile = await createProfileForSocialUser(session.user);
+        }
+        
         setProfile(userProfile);
       } else {
         setProfile(null);
@@ -228,6 +271,54 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   };
 
+  // Sign in with Google
+  const signInWithGoogle = async () => {
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/dashboard`,
+        },
+      });
+
+      if (error) throw error;
+
+      // The redirect happens automatically
+    } catch (error: any) {
+      console.error('Google sign in error:', error);
+      toast({
+        title: "Google sign in failed",
+        description: error.message || "Please try again.",
+        variant: "destructive",
+      });
+      throw error;
+    }
+  };
+
+  // Sign in with GitHub
+  const signInWithGitHub = async () => {
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'github',
+        options: {
+          redirectTo: `${window.location.origin}/dashboard`,
+        },
+      });
+
+      if (error) throw error;
+
+      // The redirect happens automatically
+    } catch (error: any) {
+      console.error('GitHub sign in error:', error);
+      toast({
+        title: "GitHub sign in failed",
+        description: error.message || "Please try again.",
+        variant: "destructive",
+      });
+      throw error;
+    }
+  };
+
   const isAuthenticated = !!session;
 
   const contextValue: AuthContextType = {
@@ -239,6 +330,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     signIn,
     signUp,
     signOut,
+    signInWithGoogle,
+    signInWithGitHub,
     refreshProfile,
   };
 
